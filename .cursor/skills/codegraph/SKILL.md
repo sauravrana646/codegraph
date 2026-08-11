@@ -55,6 +55,20 @@ npm run build --workspace @codegraph/runtime
 npm run start --workspace @codegraph/runtime -- /workspace README.md 1 codegraph
 ```
 
+Run the local runtime API:
+
+```bash
+npm run serve --workspace @codegraph/runtime -- 4311
+curl http://127.0.0.1:4311/health
+```
+
+Available deterministic API endpoints:
+
+- `POST /v1/tools/explain-selection`
+- `POST /v1/tools/find-definition`
+- `POST /v1/tools/find-usages`
+- `POST /v1/tools/logical-section`
+
 ## Cursor IDE workflow
 
 1. Open the repository in Cursor.

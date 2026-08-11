@@ -71,6 +71,48 @@ Expected behavior:
 - includes a structured explanation block
 - reports current capability metadata for the request
 
+## Run the local JSON API
+
+The runtime can also expose the deterministic Codegraph tools over local HTTP.
+
+Start the server:
+
+```bash
+npm run serve --workspace @codegraph/runtime -- 4311
+```
+
+Health check:
+
+```bash
+curl http://127.0.0.1:4311/health
+```
+
+Available endpoints:
+
+- `POST /v1/tools/explain-selection`
+- `POST /v1/tools/find-definition`
+- `POST /v1/tools/find-usages`
+- `POST /v1/tools/logical-section`
+
+All tool endpoints accept:
+
+```json
+{
+  "rootPath": "/workspace",
+  "filePath": "examples/demo.py",
+  "line": 10,
+  "selectedText": "create"
+}
+```
+
+Example:
+
+```bash
+curl -X POST http://127.0.0.1:4311/v1/tools/find-definition \
+  -H "content-type: application/json" \
+  -d '{"rootPath":"/workspace","filePath":"examples/demo.py","line":10,"selectedText":"create"}'
+```
+
 ## Run in Cursor IDE
 
 Cursor can run the VS Code-compatible extension in `apps/ide-vscode`.
