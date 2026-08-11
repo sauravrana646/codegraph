@@ -6,7 +6,7 @@ Codegraph is a Python-first codebase intelligence platform that helps developers
 
 This repository now contains the first usable local MVP slice:
 
-- `apps/ide-vscode` — importable VS Code/Cursor extension (VSIX) with Explain Selection + navigation commands
+- `apps/ide-vscode` — importable VS Code/Cursor extension (VSIX) with Live Explain, Explain Selection + navigation commands
 - `apps/runtime` — local runtime CLI + JSON API that builds bounded explanation context for a workspace/file/line
 - `apps/mcp` — stdio MCP server exposing the same deterministic tools to Cursor/Claude MCP clients
 - `skills/codegraph` — portable, importable Agent Skill (`SKILL.md`) for Cursor / Claude / Codex
@@ -300,30 +300,31 @@ Because Cursor is VS Code-compatible, the extension can be developed with the no
 3. Open the `apps/ide-vscode` folder or keep the full repo open.
 4. Start an Extension Development Host using the standard VS Code/Cursor extension-debug workflow.
 5. In the new host window, open a workspace with a Python file.
-6. Select text or place the cursor on a line.
-7. Run the command palette action:
-
-   ```text
-   Codegraph: Explain Selection
-   ```
+6. Toggle **Codegraph: Toggle Live Explain Mode** once (or click the status bar item).
+7. Move the cursor / select symbols — the side panel updates continuously. No Command Palette on every move.
+8. Optionally click **Enrich & Explain with Agent** when you want subscription-model narrative.
 
 Current behavior:
 
+- **Live Explain** — toggle once; auto-explains as you navigate (debounced, Python-first, in-panel)
 - gathers local selection context
 - performs deterministic Python-aware symbol discovery and bounded reference search
 - opens a side panel with summary, sources, inferred claims, caveats, and enrichment status
 - lets you click cited source locations in the panel to jump back into the editor
-- adds command palette actions for `Codegraph: Find Definition` and `Codegraph: Find Usages`
+- adds command palette actions for Live Explain, Explain Selection, Find Definition, and Find Usages
 - keeps a lightweight in-memory session for the current explanation target so related commands can reuse it
 - keeps a raw JSON trace in the `Codegraph` output channel for debugging
-- optionally enriches narrative fields when `codegraph.enrichment.enabled` is on and an API key is configured
+- agent enrichment is on-demand (does not spam chat during Live Explain); API key mode can enrich in-panel
 
 Useful settings:
 
 ```text
-codegraph.modelAccess.useBuiltInAgent      # agent does enrichment + explanation (default on)
+codegraph.liveExplain.enabled              # Live Explain on/off (also toggled from status bar)
+codegraph.liveExplain.debounceMs           # delay after cursor moves (default 450)
+codegraph.liveExplain.pythonOnly           # only auto-explain Python (default on)
+codegraph.modelAccess.useBuiltInAgent      # agent does enrichment + explanation when asked (default on)
 codegraph.modelAccess.useApiKeyProvider    # API key does enrichment (default off)
-codegraph.modelAccess.autoEnrichOnExplain  # auto handoff to agent after Explain (default on)
+codegraph.modelAccess.autoEnrichOnExplain  # auto handoff after *manual* Explain only (default off)
 codegraph.enrichment.apiKey                # only for API key mode
 codegraph.enrichment.baseUrl
 codegraph.enrichment.model
@@ -334,7 +335,9 @@ Pick one path: **agent** (subscription) or **API key**. The Explain panel checkb
 Useful commands in Cursor/VS Code:
 
 ```text
+Codegraph: Toggle Live Explain Mode
 Codegraph: Explain Selection
+Codegraph: Enrich & Explain with Agent
 Codegraph: Find Definition
 Codegraph: Find Usages
 ```

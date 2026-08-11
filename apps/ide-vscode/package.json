@@ -28,8 +28,10 @@
     "codegraph"
   ],
   "activationEvents": [
+    "onStartupFinished",
     "onCommand:codegraph.explainSelection",
     "onCommand:codegraph.askCursorAgent",
+    "onCommand:codegraph.toggleLiveExplain",
     "onCommand:codegraph.findDefinition",
     "onCommand:codegraph.findUsages"
   ],
@@ -37,12 +39,16 @@
   "contributes": {
     "commands": [
       {
+        "command": "codegraph.toggleLiveExplain",
+        "title": "Codegraph: Toggle Live Explain Mode"
+      },
+      {
         "command": "codegraph.explainSelection",
         "title": "Codegraph: Explain Selection"
       },
       {
         "command": "codegraph.askCursorAgent",
-        "title": "Codegraph: Ask Cursor/Claude Agent"
+        "title": "Codegraph: Enrich & Explain with Agent"
       },
       {
         "command": "codegraph.findDefinition",
@@ -56,20 +62,37 @@
     "configuration": {
       "title": "Codegraph",
       "properties": {
+        "codegraph.liveExplain.enabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "When on, Codegraph auto-explains the current cursor/selection as you navigate (no Command Palette each time). Toggle via **Codegraph: Toggle Live Explain Mode** or the status bar."
+        },
+        "codegraph.liveExplain.debounceMs": {
+          "type": "number",
+          "default": 450,
+          "minimum": 100,
+          "maximum": 5000,
+          "description": "Delay after cursor/selection changes before live explain runs."
+        },
+        "codegraph.liveExplain.pythonOnly": {
+          "type": "boolean",
+          "default": true,
+          "description": "Only auto-explain when the active editor is a Python file."
+        },
         "codegraph.modelAccess.useBuiltInAgent": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Use **built-in Cursor/Claude agent** for ALL generative work (explanation + enrichment). No API key. Recommended for subscription plans. Mutually exclusive with API key provider."
+          "markdownDescription": "Use **built-in Cursor/Claude agent** for generative enrichment when you explicitly ask. Live Explain itself stays in-panel (deterministic) so it can update continuously without opening chat on every cursor move."
         },
         "codegraph.modelAccess.useApiKeyProvider": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Use an **API key provider** for ALL generative work (explanation enrichment in-panel). Requires `codegraph.enrichment.apiKey` or `OPENAI_API_KEY`. Mutually exclusive with built-in agent."
+          "markdownDescription": "Use an **API key provider** for in-panel enrichment (including during Live Explain if enabled)."
         },
         "codegraph.modelAccess.autoEnrichOnExplain": {
           "type": "boolean",
-          "default": true,
-          "markdownDescription": "When built-in agent mode is on, automatically hand off enrichment + explanation to the agent after Explain Selection."
+          "default": false,
+          "markdownDescription": "After a **manual** Explain Selection, auto-hand off to Cursor/Claude agent. Does **not** fire on every Live Explain cursor move (that would spam chat)."
         },
         "codegraph.enrichment.enabled": {
           "type": "boolean",

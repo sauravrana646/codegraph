@@ -33,6 +33,11 @@ let outputChannel: vscode.OutputChannel | undefined;
 let panel: vscode.WebviewPanel | undefined;
 let currentSession: CodeUnderstandingSession | undefined;
 let panelMessageHooked = false;
+let liveExplainEnabled = false;
+let liveExplainStatusBar: vscode.StatusBarItem | undefined;
+let liveExplainTimer: NodeJS.Timeout | undefined;
+let liveExplainGeneration = 0;
+let extensionContext: vscode.ExtensionContext | undefined;
 
 function getOutputChannel(): vscode.OutputChannel {
   if (!outputChannel) {
@@ -42,7 +47,104 @@ function getOutputChannel(): vscode.OutputChannel {
   return outputChannel;
 }
 
+function liveExplainConfig(): { debounceMs: number; pythonOnly: boolean } {
+  const cfg = vscode.workspace.getConfiguration("codegraph.liveExplain");
+  const debounceMs = Number(cfg.get<number>("debounceMs") ?? 450);
+  return {
+    debounceMs: Number.isFinite(debounceMs) ? Math.min(5000, Math.max(100, debounceMs)) : 450,
+    pythonOnly: cfg.get<boolean>("pythonOnly") !== false
+  };
+}
+
+function updateLiveExplainStatusBar(): void {
+  if (!liveExplainStatusBar) {
+    return;
+  }
+
+  liveExplainStatusBar.text = liveExplainEnabled ? "$(eye) Codegraph Live: ON" : "$(eye-closed) Codegraph Live: OFF";
+  liveExplainStatusBar.tooltip = liveExplainEnabled
+    ? "Live Explain is on — explanations update as you move the cursor. Click to turn off."
+    : "Live Explain is off. Click to turn on continuous explanations.";
+  liveExplainStatusBar.backgroundColor = liveExplainEnabled
+    ? new vscode.ThemeColor("statusBarItem.warningBackground")
+    : undefined;
+}
+
+async function setLiveExplainEnabled(enabled: boolean, announce = true): Promise<void> {
+  liveExplainEnabled = enabled;
+  await vscode.workspace
+    .getConfiguration("codegraph.liveExplain")
+    .update("enabled", enabled, vscode.ConfigurationTarget.Workspace);
+  if (extensionContext) {
+    await extensionContext.workspaceState.update("codegraph.liveExplain.enabled", enabled);
+  }
+  updateLiveExplainStatusBar();
+
+  if (announce) {
+    void vscode.window.showInformationMessage(
+      enabled
+        ? "Codegraph Live Explain ON — move your cursor or select code; the side panel updates automatically. No Command Palette needed."
+        : "Codegraph Live Explain OFF."
+    );
+  }
+
+  if (enabled) {
+    const request = getActiveRequest({ quiet: true });
+    if (request && extensionContext) {
+      void runExplainSelection(extensionContext, request, { live: true, handOffAgent: false });
+    }
+  } else if (panel && currentSession) {
+    panel.webview.html = renderExplanationHtml(
+      currentSession.request.filePath,
+      currentSession.request.line,
+      currentSession.result
+    );
+  }
+}
+
+function scheduleLiveExplain(): void {
+  if (!liveExplainEnabled || !extensionContext) {
+    return;
+  }
+
+  const { debounceMs, pythonOnly } = liveExplainConfig();
+  const editor = vscode.window.activeTextEditor;
+
+  if (!editor) {
+    return;
+  }
+
+  if (pythonOnly && editor.document.languageId !== "python") {
+    return;
+  }
+
+  if (liveExplainTimer) {
+    clearTimeout(liveExplainTimer);
+  }
+
+  const generation = ++liveExplainGeneration;
+  liveExplainTimer = setTimeout(() => {
+    const request = getActiveRequest({ quiet: true });
+    if (!request || generation !== liveExplainGeneration || !extensionContext) {
+      return;
+    }
+
+    if (
+      currentSession &&
+      currentSession.request.rootPath === request.rootPath &&
+      currentSession.request.filePath === request.filePath &&
+      currentSession.request.line === request.line &&
+      (currentSession.request.selectedText ?? "") === (request.selectedText ?? "")
+    ) {
+      return;
+    }
+
+    void runExplainSelection(extensionContext, request, { live: true, handOffAgent: false });
+  }, debounceMs);
+}
+
 export function activate(context: vscode.ExtensionContext): void {
+  extensionContext = context;
   const bundledParser = path.join(context.extensionPath, "python_symbol_parser.py");
   const monorepoParser = path.join(
     context.extensionPath,
@@ -56,6 +158,21 @@ export function activate(context: vscode.ExtensionContext): void {
     ? bundledParser
     : monorepoParser;
 
+  liveExplainStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  liveExplainStatusBar.command = "codegraph.toggleLiveExplain";
+  liveExplainStatusBar.show();
+
+  const saved =
+    context.workspaceState.get<boolean>("codegraph.liveExplain.enabled") ??
+    vscode.workspace.getConfiguration("codegraph.liveExplain").get<boolean>("enabled") ??
+    false;
+  liveExplainEnabled = Boolean(saved);
+  updateLiveExplainStatusBar();
+
+  const toggleLiveCommand = vscode.commands.registerCommand("codegraph.toggleLiveExplain", async () => {
+    await setLiveExplainEnabled(!liveExplainEnabled);
+  });
+
   const explainCommand = vscode.commands.registerCommand("codegraph.explainSelection", async () => {
     const request = getActiveRequest();
 
@@ -63,7 +180,7 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
 
-    await runExplainSelection(context, request);
+    await runExplainSelection(context, request, { live: false });
   });
 
   const askAgentCommand = vscode.commands.registerCommand("codegraph.askCursorAgent", async () => {
@@ -113,19 +230,62 @@ export function activate(context: vscode.ExtensionContext): void {
     await openFromCandidates(request.rootPath, usages, "usage");
   });
 
-  context.subscriptions.push(explainCommand, askAgentCommand, definitionCommand, usagesCommand, getOutputChannel());
+  const selectionListener = vscode.window.onDidChangeTextEditorSelection((event) => {
+    if (!liveExplainEnabled) {
+      return;
+    }
+    // Ignore programmatic selection changes (e.g. jumping to a source from the panel).
+    if (event.kind === vscode.TextEditorSelectionChangeKind.Command) {
+      return;
+    }
+    scheduleLiveExplain();
+  });
+  const editorListener = vscode.window.onDidChangeActiveTextEditor(() => {
+    scheduleLiveExplain();
+  });
+
+  context.subscriptions.push(
+    toggleLiveCommand,
+    explainCommand,
+    askAgentCommand,
+    definitionCommand,
+    usagesCommand,
+    selectionListener,
+    editorListener,
+    liveExplainStatusBar,
+    getOutputChannel(),
+    {
+      dispose: () => {
+        if (liveExplainTimer) {
+          clearTimeout(liveExplainTimer);
+          liveExplainTimer = undefined;
+        }
+      }
+    }
+  );
+
+  if (liveExplainEnabled) {
+    scheduleLiveExplain();
+  }
 }
 
 export function deactivate(): void {
+  if (liveExplainTimer) {
+    clearTimeout(liveExplainTimer);
+    liveExplainTimer = undefined;
+  }
   outputChannel?.dispose();
   outputChannel = undefined;
   panel?.dispose();
   panel = undefined;
   currentSession = undefined;
   panelMessageHooked = false;
+  liveExplainStatusBar?.dispose();
+  liveExplainStatusBar = undefined;
+  extensionContext = undefined;
 }
 
-function getActiveRequest():
+function getActiveRequest(options?: { quiet?: boolean }):
   | {
       rootPath: string;
       filePath: string;
@@ -136,14 +296,18 @@ function getActiveRequest():
   const editor = vscode.window.activeTextEditor;
 
   if (!editor) {
-    void vscode.window.showWarningMessage("Codegraph needs an active editor.");
+    if (!options?.quiet) {
+      void vscode.window.showWarningMessage("Codegraph needs an active editor.");
+    }
     return undefined;
   }
 
   const workspaceFolder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
 
   if (!workspaceFolder) {
-    void vscode.window.showWarningMessage("Codegraph could not determine the current workspace folder.");
+    if (!options?.quiet) {
+      void vscode.window.showWarningMessage("Codegraph could not determine the current workspace folder.");
+    }
     return undefined;
   }
 
@@ -185,7 +349,7 @@ function modelAccessConfig(): {
   return {
     useBuiltInAgent,
     useApiKeyProvider,
-    autoEnrichOnExplain: access.get<boolean>("autoEnrichOnExplain") !== false,
+    autoEnrichOnExplain: Boolean(access.get<boolean>("autoEnrichOnExplain")),
     preferIdeHost: enrichment.get<boolean>("preferIdeHost") !== false,
     apiKey: apiKey || undefined,
     baseUrl: String(enrichment.get<string>("baseUrl") ?? "https://api.openai.com/v1"),
@@ -317,9 +481,27 @@ async function enrichViaAgent(
 
 async function maybeEnrichSelection(
   deterministic: SelectionContext,
-  options?: { handOffAgent?: boolean }
+  options?: { handOffAgent?: boolean; live?: boolean }
 ): Promise<EnrichedSelectionContext> {
   const access = modelAccessConfig();
+
+  // Live mode must stay in-panel. Never open Agent chat on every cursor move.
+  if (options?.live) {
+    if (access.useApiKeyProvider) {
+      return enrichViaApiKey(deterministic);
+    }
+
+    return {
+      ...deterministic,
+      enrichment: {
+        used: false,
+        provider: access.useBuiltInAgent ? "cursor-agent" : undefined,
+        error: access.useBuiltInAgent
+          ? "Live Explain shows deterministic facts continuously. Click Enrich & Explain with Agent when you want the subscription model."
+          : "Live Explain shows deterministic facts only."
+      }
+    };
+  }
 
   if (access.useApiKeyProvider) {
     return enrichViaApiKey(deterministic);
@@ -415,20 +597,29 @@ async function runAskCursorAgent(
 
 async function runExplainSelection(
   context: vscode.ExtensionContext,
-  request: { rootPath: string; filePath: string; line: number; selectedText?: string }
+  request: { rootPath: string; filePath: string; line: number; selectedText?: string },
+  options?: { live?: boolean; handOffAgent?: boolean }
 ): Promise<void> {
+  const live = Boolean(options?.live);
   const deterministic = await buildSelectionContext(request);
-  const result = await maybeEnrichSelection(deterministic);
+  const result = await maybeEnrichSelection(deterministic, {
+    live,
+    handOffAgent: live ? false : options?.handOffAgent
+  });
 
   currentSession = { request, result };
 
   const channel = getOutputChannel();
-  channel.clear();
-  channel.appendLine("Codegraph selection context");
+  if (!live) {
+    channel.clear();
+  }
+  channel.appendLine(live ? "Codegraph live explain" : "Codegraph selection context");
   channel.appendLine(
     redactSecrets(
       JSON.stringify(
         {
+          live,
+          target: `${request.filePath}:${request.line}`,
           metadata: result.metadata,
           enrichment: result.enrichment,
           explanation: {
@@ -450,16 +641,22 @@ async function runExplainSelection(
     return;
   }
 
-  panel.title = request.selectedText ? `Codegraph: ${request.selectedText}` : `Codegraph: ${request.filePath}:${request.line}`;
+  const label = request.selectedText
+    ? request.selectedText.slice(0, 48)
+    : `${request.filePath}:${request.line}`;
+  panel.title = live ? `Codegraph Live: ${label}` : `Codegraph: ${label}`;
   panel.webview.html = renderExplanationHtml(request.filePath, request.line, result);
+  // Keep editor focus during live updates so navigation stays interactive.
   panel.reveal(vscode.ViewColumn.Beside, true);
 
-  const enrichmentLabel = enrichmentStatusLabel(result.enrichment);
-  const summaryText = request.selectedText
-    ? `Prepared local context for "${request.selectedText}" (tier ${result.metadata.capabilityTier}, enrichment ${enrichmentLabel}).`
-    : `Prepared local context for ${request.filePath}:${request.line} (tier ${result.metadata.capabilityTier}, enrichment ${enrichmentLabel}).`;
+  if (!live) {
+    const enrichmentLabel = enrichmentStatusLabel(result.enrichment);
+    const summaryText = request.selectedText
+      ? `Prepared local context for "${request.selectedText}" (tier ${result.metadata.capabilityTier}, enrichment ${enrichmentLabel}).`
+      : `Prepared local context for ${request.filePath}:${request.line} (tier ${result.metadata.capabilityTier}, enrichment ${enrichmentLabel}).`;
 
-  void vscode.window.showInformationMessage(summaryText);
+    void vscode.window.showInformationMessage(summaryText);
+  }
 }
 
 function ensurePanel(context: vscode.ExtensionContext): void {
@@ -517,6 +714,11 @@ async function handlePanelMessage(message: unknown): Promise<void> {
 
   if (parsed.type === "askCursorAgent") {
     await vscode.commands.executeCommand("codegraph.askCursorAgent");
+    return;
+  }
+
+  if (parsed.type === "toggleLiveExplain") {
+    await vscode.commands.executeCommand("codegraph.toggleLiveExplain");
     return;
   }
 
@@ -616,12 +818,15 @@ function renderExplanationHtml(
   const inferredClaims = result.explanation.inferredClaims ?? [];
   const access = modelAccessConfig();
   const enrichmentLabel = enrichmentStatusLabel(result.enrichment);
+  const liveLabel = liveExplainEnabled ? "Live ON" : "Live OFF";
   const modeNote = access.useApiKeyProvider
     ? access.apiKey
       ? "API key mode: enrichment runs through your OpenAI-compatible provider."
       : "API key mode is on, but no API key is configured yet."
     : access.useBuiltInAgent
-      ? "Agent mode: enrichment + explanation run through Cursor/Claude agent (subscription, no API key)."
+      ? liveExplainEnabled
+        ? "Live Explain is on: panel updates as you move. Agent enrichment is on-demand (Enrich & Explain with Agent) — chat will not open on every cursor move."
+        : "Agent mode: enrichment + explanation run through Cursor/Claude agent when you ask (subscription, no API key)."
       : "Model access disabled.";
 
   const enrichmentNote = result.enrichment?.used
@@ -654,6 +859,10 @@ function renderExplanationHtml(
           background: var(--vscode-badge-background);
           color: var(--vscode-badge-foreground);
         }
+        .pill-live-on {
+          background: var(--vscode-statusBarItem-warningBackground, var(--vscode-badge-background));
+          color: var(--vscode-statusBarItem-warningForeground, var(--vscode-badge-foreground));
+        }
         .actions {
           display: flex;
           flex-wrap: wrap;
@@ -667,6 +876,10 @@ function renderExplanationHtml(
           border-radius: 6px;
           padding: 6px 10px;
           cursor: pointer;
+        }
+        .action-button.secondary {
+          background: var(--vscode-button-secondaryBackground, transparent);
+          color: var(--vscode-button-secondaryForeground, var(--vscode-editor-foreground));
         }
         .mode-box {
           margin-top: 12px;
@@ -710,12 +923,20 @@ function renderExplanationHtml(
       <h1>Codegraph Explanation</h1>
       <p class="muted">${escapeHtml(filePath)}:${line}</p>
       <p>
+        <span class="pill ${liveExplainEnabled ? "pill-live-on" : ""}">${escapeHtml(liveLabel)}</span>
         <span class="pill">Tier ${result.metadata.capabilityTier}</span>
         <span class="pill">Confidence ${result.metadata.confidence.toFixed(2)}</span>
         <span class="pill">Source ${escapeHtml(result.metadata.source)}</span>
         <span class="pill">Mode ${escapeHtml(access.useApiKeyProvider ? "api-key" : access.useBuiltInAgent ? "agent" : "off")}</span>
         <span class="pill">Enrichment ${escapeHtml(enrichmentLabel)}</span>
       </p>
+
+      <div class="mode-box">
+        <strong>Live Explain</strong>
+        <p class="muted" style="margin: 6px 0 0;">
+          Toggle once, then move the cursor or select code — this panel updates automatically. No Command Palette on every symbol.
+        </p>
+      </div>
 
       <div class="mode-box">
         <strong>Model access (pick one)</strong>
@@ -725,15 +946,16 @@ function renderExplanationHtml(
         </label>
         <label>
           <input id="useApiKeyProvider" type="checkbox" ${access.useApiKeyProvider ? "checked" : ""} />
-          <span>API key provider <span class="muted">— enrichment via OpenAI-compatible key</span></span>
+          <span>API key provider <span class="muted">— enrichment via OpenAI-compatible key (also during Live Explain)</span></span>
         </label>
       </div>
 
       ${enrichmentNote}
       <div class="actions">
-        <button class="action-button" data-action="askCursorAgent">Enrich &amp; Explain with Agent</button>
-        <button class="action-button" data-action="findDefinition">Find Definition</button>
-        <button class="action-button" data-action="findUsages">Find Usages</button>
+        <button class="action-button" data-action="toggleLiveExplain">${liveExplainEnabled ? "Turn Live Explain Off" : "Turn Live Explain On"}</button>
+        <button class="action-button secondary" data-action="askCursorAgent">Enrich &amp; Explain with Agent</button>
+        <button class="action-button secondary" data-action="findDefinition">Find Definition</button>
+        <button class="action-button secondary" data-action="findUsages">Find Usages</button>
       </div>
 
       <section>
