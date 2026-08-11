@@ -27,16 +27,11 @@ cursor --install-extension ./artifacts/codegraph-extension.vsix
 
 ## Live Explain (recommended)
 
-Turn it on **once**, then keep coding — no Command Palette on every symbol.
+Turn Live ON once, then **only move your cursor** — no typing, no Enter.
 
-**Agent mode (default):** AST/LSP context is sent to **Cursor Agent chat**. The answer appears there — no persistent Codegraph side panel.
+**Agent mode (default):** AST/LSP context is auto-sent to Cursor Agent chat and submitted. The answer appears in Agent. On macOS, allow **Accessibility** for Cursor the first time (System Settings → Privacy & Security → Accessibility).
 
 **API key mode:** AST/LSP context is enriched in the Codegraph panel.
-
-1. Status bar **Codegraph Live: OFF** → ON (or Toggle Live Explain once).
-2. Open a Python file and move the cursor / select a symbol.
-3. Agent mode: watch Agent chat for the tutoring reply.
-4. API key mode: panel shows Purpose / Fields / Notes after enrichment.
 
 Settings:
 

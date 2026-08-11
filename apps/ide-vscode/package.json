@@ -69,10 +69,15 @@
         },
         "codegraph.liveExplain.debounceMs": {
           "type": "number",
-          "default": 450,
+          "default": 900,
           "minimum": 100,
           "maximum": 5000,
-          "description": "Delay after cursor/selection changes before live explain runs."
+          "description": "Delay after cursor/selection changes before live explain runs (higher is better for Agent auto-submit)."
+        },
+        "codegraph.liveExplain.autoSubmitAgent": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "In Agent mode, automatically open/focus Agent chat, paste grounded context, and submit (no manual Enter). On macOS this uses Accessibility automation."
         },
         "codegraph.liveExplain.pythonOnly": {
           "type": "boolean",

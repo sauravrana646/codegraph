@@ -16,6 +16,7 @@ import { normalizeWorkspacePath } from "@codegraph/workspace";
 
 import { captureEditorState, setLiveBridgeEnabled } from "./liveBridge";
 import { gatherIdeLspContext, type LspGatherResult } from "./lspGather";
+import { autoSendToCursorAgent } from "./agentHandoff";
 
 type SelectionContext = Awaited<ReturnType<typeof buildSelectionContext>>;
 type EnrichedSelectionContext = GatewayEnrichedSelectionContext;
@@ -54,9 +55,14 @@ function getOutputChannel(): vscode.OutputChannel {
 
 function liveExplainConfig(): { debounceMs: number; pythonOnly: boolean } {
   const cfg = vscode.workspace.getConfiguration("codegraph.liveExplain");
-  const debounceMs = Number(cfg.get<number>("debounceMs") ?? 450);
+  const access = modelAccessConfig();
+  const agentMode = access.useBuiltInAgent && !access.useApiKeyProvider;
+  const configured = Number(cfg.get<number>("debounceMs") ?? (agentMode ? 900 : 450));
+  const fallback = agentMode ? 900 : 450;
+  const debounceMs = Number.isFinite(configured) ? configured : fallback;
   return {
-    debounceMs: Number.isFinite(debounceMs) ? Math.min(5000, Math.max(100, debounceMs)) : 450,
+    // Agent auto-submit needs a bit more settle time between cursor moves.
+    debounceMs: Math.min(5000, Math.max(agentMode ? 700 : 100, debounceMs)),
     pythonOnly: cfg.get<boolean>("pythonOnly") !== false
   };
 }
@@ -68,8 +74,8 @@ function updateLiveExplainStatusBar(): void {
 
   liveExplainStatusBar.text = liveExplainEnabled ? "$(eye) Codegraph Live: ON" : "$(eye-closed) Codegraph Live: OFF";
   liveExplainStatusBar.tooltip = liveExplainEnabled
-    ? "Live Explain is on — explanations update as you move the cursor. Click to turn off."
-    : "Live Explain is off. Click to turn on continuous explanations.";
+    ? "Live Explain ON — move cursor; Agent answers automatically in Agent chat."
+    : "Live Explain OFF. Click to turn on automatic explanations.";
   liveExplainStatusBar.backgroundColor = liveExplainEnabled
     ? new vscode.ThemeColor("statusBarItem.warningBackground")
     : undefined;
@@ -92,7 +98,7 @@ async function setLiveExplainEnabled(enabled: boolean, announce = true): Promise
     void vscode.window.showInformationMessage(
       enabled
         ? agentMode
-          ? "Codegraph Live ON — cursor moves send AST/LSP context to Agent chat (no side panel)."
+          ? "Codegraph Live ON — just move your cursor. Agent chat answers automatically (no typing/Enter)."
           : "Codegraph Live ON — cursor moves enrich in-panel via API key."
         : "Codegraph Live Explain OFF."
     );
@@ -497,8 +503,7 @@ async function enrichViaAgent(
     options?.handOff === false
       ? false
       : await handOffToCursorAgent(buildAskAgentQuery(grounded), {
-          forceNew: options?.forceNewChat,
-          submit: true
+          forceNew: options?.forceNewChat
         });
 
   return {
@@ -508,103 +513,27 @@ async function enrichViaAgent(
       provider: "cursor-agent",
       model: "subscription",
       error: handedOff
-        ? "Context sent to Cursor Agent — read the answer in the Agent chat."
-        : "Could not open Cursor Agent. Context is on the clipboard; paste into Agent chat."
+        ? "Context auto-sent to Cursor Agent — answer appears in Agent chat."
+        : "Auto-send to Agent failed. On macOS, allow Accessibility for Cursor/osascript, then retry."
     }
   };
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function tryExecuteCommand(command: string, ...args: unknown[]): Promise<boolean> {
-  try {
-    await vscode.commands.executeCommand(command, ...args);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /**
- * Open/focus Cursor Agent, paste grounded prompt, and submit so the Agent replies
- * in the Agent window (no Codegraph side panel).
+ * Fully automatic: open/focus Agent, insert prompt, submit. No manual Enter.
  */
 async function handOffToCursorAgent(
   prompt: string,
-  options?: { forceNew?: boolean; submit?: boolean }
+  options?: { forceNew?: boolean }
 ): Promise<boolean> {
-  const previousClipboard = await vscode.env.clipboard.readText();
-  await vscode.env.clipboard.writeText(prompt);
-
-  let opened = false;
-
-  if (options?.forceNew || !agentChatOpened) {
-    const openNew = [
-      "composer.newAgentChat",
-      "aichat.newchataction",
-      "workbench.action.chat.newChat",
-      "workbench.action.chat.open"
-    ];
-    for (const command of openNew) {
-      if (await tryExecuteCommand(command)) {
-        opened = true;
-        agentChatOpened = true;
-        break;
-      }
-      if (await tryExecuteCommand(command, { query: prompt })) {
-        opened = true;
-        agentChatOpened = true;
-        break;
-      }
-    }
-  } else {
-    const focusExisting = [
-      "composer.focusComposer",
-      "aichat.show-ai-chat",
-      "workbench.action.chat.open",
-      "composer.newAgentChat"
-    ];
-    for (const command of focusExisting) {
-      if (await tryExecuteCommand(command)) {
-        opened = true;
-        break;
-      }
-    }
+  const ok = await autoSendToCursorAgent(prompt, {
+    forceNew: options?.forceNew,
+    log: (message) => getOutputChannel().appendLine(message)
+  });
+  if (ok) {
+    agentChatOpened = true;
   }
-
-  // Give the Agent input focus, then paste.
-  await sleep(350);
-  await tryExecuteCommand("editor.action.clipboardPasteAction");
-  await sleep(120);
-
-  if (options?.submit !== false) {
-    const submitCommands = [
-      "composer.startGeneration",
-      "workbench.action.chat.submit",
-      "composer.submit",
-      "chatEditor.action.submit"
-    ];
-    for (const command of submitCommands) {
-      if (await tryExecuteCommand(command)) {
-        break;
-      }
-    }
-  }
-
-  // Restore prior clipboard after paste/submit has had time to run.
-  setTimeout(() => {
-    void vscode.env.clipboard.writeText(previousClipboard);
-  }, 2000);
-
-  getOutputChannel().appendLine(
-    opened
-      ? "Handed AST/LSP context to Cursor Agent chat (paste + submit)."
-      : "Agent open failed; prompt left on clipboard for manual paste."
-  );
-
-  return opened;
+  return ok;
 }
 
 function buildAskAgentQuery(result: SelectionContext | EnrichedSelectionContext): string {
@@ -613,6 +542,7 @@ function buildAskAgentQuery(result: SelectionContext | EnrichedSelectionContext)
     "AST + LSP context below is grounding only — YOU write the final tutoring explanation in this chat.",
     "Do not ask for API keys.",
     "Reply here in the Agent window (learn-codebase style).",
+    "This message was auto-submitted from Codegraph Live Explain — answer immediately.",
     "",
     buildAgentHandoffPrompt(result)
   ].join("\n");
@@ -710,7 +640,9 @@ async function enrichGroundedContext(
 
   if (access.useBuiltInAgent) {
     const now = Date.now();
-    const minGapMs = options?.live ? 3500 : 0;
+    const autoSubmit =
+      vscode.workspace.getConfiguration("codegraph.liveExplain").get<boolean>("autoSubmitAgent") !== false;
+    const minGapMs = options?.live ? 4500 : 0;
     if (options?.live && now - lastAgentHandOffMs < minGapMs) {
       return {
         ...grounded,
@@ -718,19 +650,19 @@ async function enrichGroundedContext(
           used: false,
           provider: "cursor-agent",
           model: "subscription",
-          error: "Live agent handoff throttled — move again shortly or wait for the current Agent reply."
+          error: "Live agent handoff throttled — waiting for the current Agent reply."
         }
       };
     }
 
-    const shouldHandOff = options?.handOffAgent ?? true;
+    const shouldHandOff = autoSubmit && (options?.handOffAgent ?? true);
     if (shouldHandOff) {
       lastAgentHandOffMs = now;
     }
 
     return enrichViaAgent(grounded, {
       handOff: shouldHandOff,
-      forceNewChat: !options?.live && !agentChatOpened
+      forceNewChat: !agentChatOpened
     });
   }
 
