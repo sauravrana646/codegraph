@@ -3,14 +3,29 @@
   "displayName": "Codegraph",
   "version": "0.1.0",
   "private": true,
+  "publisher": "codegraph",
   "description": "Python-first codebase intelligence extension for VS Code and Cursor.",
   "license": "MIT",
   "type": "commonjs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sauravrana646/codegraph.git"
+  },
   "engines": {
-    "vscode": "^1.90.0"
+    "vscode": "^1.105.0"
   },
   "categories": [
-    "Other"
+    "Other",
+    "Programming Languages",
+    "Machine Learning"
+  ],
+  "keywords": [
+    "python",
+    "codebase intelligence",
+    "explain code",
+    "find references",
+    "cursor",
+    "codegraph"
   ],
   "activationEvents": [
     "onCommand:codegraph.explainSelection",
@@ -61,14 +76,23 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "bundle": "node ./esbuild.mjs",
     "clean": "rm -rf dist",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "package": "npm run bundle && npx --yes @vscode/vsce package --no-dependencies --out ../../artifacts/codegraph-extension.vsix"
   },
   "dependencies": {
     "@codegraph/core": "0.1.0",
     "@codegraph/model-gateway": "0.1.0"
   },
   "devDependencies": {
-    "@types/vscode": "^1.105.0"
-  }
+    "@types/vscode": "^1.105.0",
+    "esbuild": "^0.25.9"
+  },
+  "files": [
+    "dist/extension.js",
+    "python_symbol_parser.py",
+    "README.md",
+    "LICENSE"
+  ]
 }

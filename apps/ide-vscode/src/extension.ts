@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { buildSelectionContext, findDefinition, findUsages } from "@codegraph/core";
@@ -33,6 +34,19 @@ function getOutputChannel(): vscode.OutputChannel {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
+  const bundledParser = path.join(context.extensionPath, "python_symbol_parser.py");
+  const monorepoParser = path.join(
+    context.extensionPath,
+    "..",
+    "..",
+    "packages",
+    "language-intelligence",
+    "python_symbol_parser.py"
+  );
+  process.env.CODEGRAPH_PYTHON_PARSER = fs.existsSync(bundledParser)
+    ? bundledParser
+    : monorepoParser;
+
   const explainCommand = vscode.commands.registerCommand("codegraph.explainSelection", async () => {
     const request = getActiveRequest();
 

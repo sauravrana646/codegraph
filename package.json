@@ -11,7 +11,10 @@
     "build": "tsc -b",
     "clean": "npm run clean --workspaces --if-present",
     "typecheck": "tsc -b --pretty false",
-    "lint": "npm run lint --workspaces --if-present"
+    "lint": "npm run lint --workspaces --if-present",
+    "package:skill": "bash skills/codegraph/scripts/package-skill.sh",
+    "package:extension": "npm run build && npm run package --workspace codegraph-ide-vscode",
+    "install:skill": "bash skills/codegraph/scripts/install-skill.sh"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",

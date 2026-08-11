@@ -6,9 +6,10 @@ Codegraph is a Python-first codebase intelligence platform that helps developers
 
 This repository now contains the first usable local MVP slice:
 
-- `apps/ide-vscode` — a VS Code/Cursor extension with an `Explain Selection` command and side-panel explanation view
-- `apps/runtime` — a local runtime CLI + JSON API that builds bounded explanation context for a workspace/file/line
-- `apps/mcp` — a stdio MCP server exposing the same deterministic tools to Cursor/MCP clients
+- `apps/ide-vscode` — importable VS Code/Cursor extension (VSIX) with Explain Selection + navigation commands
+- `apps/runtime` — local runtime CLI + JSON API that builds bounded explanation context for a workspace/file/line
+- `apps/mcp` — stdio MCP server exposing the same deterministic tools to Cursor/Claude MCP clients
+- `skills/codegraph` — portable, importable Agent Skill (`SKILL.md`) for Cursor / Claude / Codex
 - `packages/protocol` — shared type contracts and tool response envelopes
 - `packages/agent-tools` — shared tool runners used by runtime and MCP
 - `packages/workspace` — workspace identity and safe path helpers

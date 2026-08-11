@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "codegraph": {
+      "command": "node",
+      "args": ["REPLACE_WITH_CODEGRAPH_ROOT/apps/mcp/dist/index.js"],
+      "env": {
+        "CODEGRAPH_ROOT": "REPLACE_WITH_CODEGRAPH_ROOT"
+      }
+    }
+  }
+}

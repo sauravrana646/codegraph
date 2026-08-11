@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -24,7 +25,26 @@ interface PythonParserJson {
   symbols?: PythonAstSymbol[];
 }
 
-const parserScriptPath = path.resolve(__dirname, "..", "python_symbol_parser.py");
+function resolveParserScriptPath(): string {
+  const fromEnv = process.env.CODEGRAPH_PYTHON_PARSER?.trim();
+  if (fromEnv) {
+    return path.resolve(fromEnv);
+  }
+
+  const candidates = [
+    path.resolve(__dirname, "python_symbol_parser.py"),
+    path.resolve(__dirname, "..", "python_symbol_parser.py"),
+    path.resolve(__dirname, "..", "..", "language-intelligence", "python_symbol_parser.py")
+  ];
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return candidates[1] ?? candidates[0]!;
+}
 
 function regexFallback(content: string): PythonAstParseResult {
   const lines = content.split(/\r?\n/);
@@ -77,7 +97,7 @@ export async function parsePythonFile(filePath: string, content?: string): Promi
   const fileContent = content ?? (await fs.readFile(filePath, "utf8"));
 
   try {
-    const { stdout } = await execFileAsync("python3", [parserScriptPath, filePath], {
+    const { stdout } = await execFileAsync("python3", [resolveParserScriptPath(), filePath], {
       maxBuffer: 1024 * 1024
     });
     const parsed = JSON.parse(stdout) as PythonParserJson;
