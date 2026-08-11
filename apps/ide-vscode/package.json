@@ -32,6 +32,7 @@
     "onCommand:codegraph.explainSelection",
     "onCommand:codegraph.askCursorAgent",
     "onCommand:codegraph.toggleLiveExplain",
+    "onCommand:codegraph.diagnoseLiveExplain",
     "onCommand:codegraph.findDefinition",
     "onCommand:codegraph.findUsages"
   ],
@@ -41,6 +42,10 @@
       {
         "command": "codegraph.toggleLiveExplain",
         "title": "Codegraph: Toggle Live Explain Mode"
+      },
+      {
+        "command": "codegraph.diagnoseLiveExplain",
+        "title": "Codegraph: Diagnose Live Explain"
       },
       {
         "command": "codegraph.explainSelection",

@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 
 import { buildSelectionContext, findDefinition, findUsages } from "@codegraph/core";
@@ -81,6 +82,14 @@ function updateLiveExplainStatusBar(): void {
     : undefined;
 }
 
+function logCodegraph(message: string, show = false): void {
+  const channel = getOutputChannel();
+  channel.appendLine(`[${new Date().toISOString()}] ${message}`);
+  if (show) {
+    channel.show(true);
+  }
+}
+
 async function setLiveExplainEnabled(enabled: boolean, announce = true): Promise<void> {
   liveExplainEnabled = enabled;
   await vscode.workspace
@@ -91,6 +100,7 @@ async function setLiveExplainEnabled(enabled: boolean, announce = true): Promise
   }
   updateLiveExplainStatusBar();
   setLiveBridgeEnabled(enabled);
+  logCodegraph(`Live Explain -> ${enabled ? "ON" : "OFF"}`, true);
 
   if (announce) {
     const access = modelAccessConfig();
@@ -98,7 +108,7 @@ async function setLiveExplainEnabled(enabled: boolean, announce = true): Promise
     void vscode.window.showInformationMessage(
       enabled
         ? agentMode
-          ? "Codegraph Live ON — just move your cursor. Agent chat answers automatically (no typing/Enter)."
+          ? "Codegraph Live ON — move your cursor in a Python file. Watch Agent chat + Output → Codegraph."
           : "Codegraph Live ON — cursor moves enrich in-panel via API key."
         : "Codegraph Live Explain OFF."
     );
@@ -107,11 +117,26 @@ async function setLiveExplainEnabled(enabled: boolean, announce = true): Promise
   if (enabled) {
     const request = getActiveRequest({ quiet: true });
     const editor = vscode.window.activeTextEditor;
-    if (request && editor) {
+    if (!request) {
+      logCodegraph("Live ON but no active workspace editor — open a Python file in a folder workspace.", true);
+      void vscode.window.showWarningMessage(
+        "Codegraph Live is ON, but no workspace file is active. Open a .py file inside a project folder."
+      );
+      return;
+    }
+    if (editor && liveExplainConfig().pythonOnly && editor.document.languageId !== "python") {
+      logCodegraph(`Live ON but language is '${editor.document.languageId}' (pythonOnly=true).`, true);
+      void vscode.window.showWarningMessage(
+        "Codegraph Live is ON, but the active file is not Python. Open a .py file."
+      );
+      return;
+    }
+    if (editor) {
       captureEditorState(editor, request);
     }
-    if (request && extensionContext) {
-      void runExplainSelection(extensionContext, request, { live: true, handOffAgent: false });
+    if (extensionContext) {
+      // Always hand off in agent mode — this was previously false and blocked all Live Agent sends.
+      void runExplainSelection(extensionContext, request, { live: true, handOffAgent: true });
     }
   } else if (panel && currentSession) {
     panel.webview.html = renderExplanationHtml(
@@ -145,8 +170,9 @@ function scheduleLiveExplain(): void {
   const generation = ++liveExplainGeneration;
   liveExplainTimer = setTimeout(() => {
     const request = getActiveRequest({ quiet: true });
-    const editor = vscode.window.activeTextEditor;
-    if (!request || generation !== liveExplainGeneration || !extensionContext || !editor) {
+    const activeEditor = vscode.window.activeTextEditor;
+    if (!request || generation !== liveExplainGeneration || !extensionContext || !activeEditor) {
+      logCodegraph("Live tick skipped (no request/editor or superseded).");
       return;
     }
 
@@ -160,9 +186,8 @@ function scheduleLiveExplain(): void {
       return;
     }
 
-    // learn-codebase-compatible agent bridge is refreshed inside runExplainSelection
-    // after deterministic facts are ready (so pending-prompt includes all sections).
-    void runExplainSelection(extensionContext, request, { live: true, handOffAgent: false });
+    logCodegraph(`Live tick → ${request.filePath}:${request.line}`);
+    void runExplainSelection(extensionContext, request, { live: true, handOffAgent: true });
   }, debounceMs);
 }
 
@@ -181,6 +206,8 @@ export function activate(context: vscode.ExtensionContext): void {
     ? bundledParser
     : monorepoParser;
 
+  logCodegraph(`Activated. parser=${process.env.CODEGRAPH_PYTHON_PARSER}`, true);
+
   liveExplainStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   liveExplainStatusBar.command = "codegraph.toggleLiveExplain";
   liveExplainStatusBar.show();
@@ -195,6 +222,36 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const toggleLiveCommand = vscode.commands.registerCommand("codegraph.toggleLiveExplain", async () => {
     await setLiveExplainEnabled(!liveExplainEnabled);
+  });
+
+  const diagnoseCommand = vscode.commands.registerCommand("codegraph.diagnoseLiveExplain", async () => {
+    const channel = getOutputChannel();
+    channel.show(true);
+    const editor = vscode.window.activeTextEditor;
+    const access = modelAccessConfig();
+    const request = getActiveRequest({ quiet: true });
+    const enabledPath = path.join(os.homedir(), ".cursor", "codegraph", "enabled");
+    logCodegraph("=== Codegraph diagnose ===", true);
+    logCodegraph(`liveEnabled=${liveExplainEnabled}`);
+    logCodegraph(
+      `agent=${access.useBuiltInAgent} apiKey=${access.useApiKeyProvider} autoSubmit=${vscode.workspace
+        .getConfiguration("codegraph.liveExplain")
+        .get("autoSubmitAgent")}`
+    );
+    logCodegraph(
+      `editor=${editor?.document.uri.fsPath ?? "(none)"} language=${editor?.document.languageId ?? "(none)"}`
+    );
+    logCodegraph(`workspaceRequest=${request ? `${request.filePath}:${request.line}` : "(none)"}`);
+    logCodegraph(`parser=${process.env.CODEGRAPH_PYTHON_PARSER ?? "(unset)"}`);
+    logCodegraph(`bridgeEnabled exists=${fs.existsSync(enabledPath)}`);
+    if (request && extensionContext) {
+      void vscode.window.showInformationMessage(
+        "Codegraph diagnose: forcing one Live explain now. Watch Output → Codegraph and Agent chat."
+      );
+      await runExplainSelection(extensionContext, request, { live: true, handOffAgent: true });
+    } else {
+      void vscode.window.showWarningMessage("Open a Python file in a workspace folder, then run diagnose again.");
+    }
   });
 
   const explainCommand = vscode.commands.registerCommand("codegraph.explainSelection", async () => {
@@ -270,6 +327,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     toggleLiveCommand,
+    diagnoseCommand,
     explainCommand,
     askAgentCommand,
     definitionCommand,
@@ -735,6 +793,7 @@ async function runExplainSelection(
   // 2) Agent mode → Agent chat only (no persistent Codegraph panel).
   //    API key mode → enrich in-panel.
   if (agentMode) {
+    logCodegraph(`Agent mode explain for ${request.filePath}:${request.line} (live=${live})`, true);
     const result = await enrichGroundedContext(grounded, {
       live,
       handOffAgent: options?.handOffAgent ?? true
@@ -743,9 +802,15 @@ async function runExplainSelection(
       return;
     }
     currentSession = { request, result };
-    getOutputChannel().appendLine(
-      `Agent handoff ${result.enrichment.used ? "ok" : "pending"} for ${request.filePath}:${request.line}`
+    logCodegraph(
+      `Agent handoff ${result.enrichment.used ? "OK" : "FAILED"} — ${result.enrichment.error ?? ""}`,
+      true
     );
+    if (!result.enrichment.used) {
+      void vscode.window.showWarningMessage(
+        `Codegraph could not auto-send to Agent. ${result.enrichment.error ?? ""} Check Output → Codegraph.`
+      );
+    }
     return;
   }
 
