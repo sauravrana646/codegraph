@@ -12,6 +12,7 @@ This repository now contains the first usable local MVP slice:
 - `packages/workspace` — workspace identity and safe path helpers
 - `packages/security` — secret scanning/redaction and symlink containment checks
 - `packages/language-intelligence` — AST-backed Python symbol parsing through a safe `python3` bridge with fallback behavior
+- `packages/model-gateway` — optional OpenAI-compatible provider enrichment over deterministic context
 - `packages/core` — deterministic Python-aware selection analysis, definition discovery, reference search, scope resolution, and explanation assembly
 - `docs/` — PRD, TDD, implementation plan, and AI-ready backlog
 - `examples/demo.py` — sample Python file for local smoke testing
@@ -103,9 +104,51 @@ All tool endpoints accept:
   "rootPath": "/workspace",
   "filePath": "examples/demo.py",
   "line": 10,
-  "selectedText": "create"
+  "selectedText": "create",
+  "enrich": false
 }
 ```
+
+### Optional model-backed enrichment
+
+Deterministic retrieval is always the base path. Model enrichment is opt-in and only rewrites narrative explanation fields while preserving deterministic sources and inferred claims.
+
+Enable enrichment with either:
+
+- request body: `"enrich": true`
+- environment: `CODEGRAPH_ENRICH=1`
+
+Provider configuration:
+
+```bash
+export CODEGRAPH_API_KEY="..."
+# optional:
+export CODEGRAPH_BASE_URL="https://api.openai.com/v1"
+export CODEGRAPH_MODEL="gpt-4o-mini"
+```
+
+`OPENAI_API_KEY` / `OPENAI_BASE_URL` are also accepted as aliases.
+
+Example enriched explain request:
+
+```bash
+curl -X POST http://127.0.0.1:4311/v1/tools/explain-selection \
+  -H "content-type: application/json" \
+  -d '{"rootPath":"/workspace","filePath":"examples/demo.py","line":10,"selectedText":"create","enrich":true}'
+```
+
+The response includes an `enrichment` block:
+
+```json
+{
+  "enrichment": {
+    "used": false,
+    "error": "Enrichment not requested..."
+  }
+}
+```
+
+If enrichment fails, the deterministic explanation is still returned and the error is reported in `enrichment.error`.
 
 Example:
 
@@ -225,10 +268,11 @@ If you want Cursor agents to use it while working in this repo:
 This first usable version is intentionally narrow:
 
 - Python understanding is AST-backed for symbol discovery, but still uses bounded deterministic heuristics for reference search and explanation assembly
+- optional provider enrichment is opt-in and OpenAI-compatible only for now
 - workspace scanning is bounded
 - dynamic/runtime-only references will be missed
-- no model provider integration yet
-- no follow-up conversation session UI yet
+- no mandatory cloud backend
+- no durable multi-user sessions yet
 
 ## Recommended next implementation steps
 
@@ -236,9 +280,9 @@ The best next engineering tasks are:
 
 1. improve logical section detection and scope resolution
 2. strengthen deterministic reference quality and ranking
-3. add provider abstraction and structured model-backed explanation generation
-4. add follow-up Code Understanding Sessions
-5. expose the deterministic tools through a more formal runtime/tool API
+3. expand provider adapters beyond OpenAI-compatible endpoints
+4. deepen follow-up Code Understanding Sessions in the extension UI
+5. expose richer tool schemas for MCP wrapping
 
 For the full sequence, see:
 

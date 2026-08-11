@@ -8,18 +8,19 @@ Codegraph is a Python-first codebase intelligence platform that helps AI and dev
 
 ## Current implementation status
 
-The repository currently contains the first implementation scaffold:
+The repository currently contains a usable local MVP:
 
 - npm workspace monorepo
 - VS Code/Cursor extension app in `apps/ide-vscode`
-- local runtime CLI in `apps/runtime`
+- local runtime CLI + JSON API in `apps/runtime`
 - shared protocol package in `packages/protocol`
 - AST-backed Python language intelligence in `packages/language-intelligence`
 - workspace path and identity helpers in `packages/workspace`
 - security primitives for path/symlink checks and secret redaction in `packages/security`
 - deterministic Python explanation assembly in `packages/core`
-- deterministic helpers now include definition lookup, usage lookup, and logical section extraction
-- the extension now exposes Explain Selection, Find Definition, and Find Usages commands
+- deterministic helpers for definition lookup, usage lookup, and logical section extraction
+- optional OpenAI-compatible enrichment in `packages/model-gateway`
+- extension commands for Explain Selection, Find Definition, and Find Usages
 
 ## Architecture rules
 
@@ -29,14 +30,15 @@ The repository currently contains the first implementation scaffold:
 4. Generative flows must consume bounded structured context only.
 5. Facts must be separated from inference.
 6. The runtime should remain IDE-independent.
+7. Provider enrichment is opt-in and must preserve deterministic sources.
 
 ## Suggested next implementation order
 
 1. Improve logical section resolution beyond current symbol scope handling
 2. Improve bounded reference and related-code retrieval
-3. Add provider abstraction and explanation normalization
-4. Expand the VS Code/Cursor extension with follow-up UX beyond the current in-memory session
-5. Expose deterministic functions through a more formal runtime/tool API
+3. Expand provider adapters beyond OpenAI-compatible endpoints
+4. Expand the VS Code/Cursor extension with richer follow-up UX
+5. Formalize MCP-ready tool schemas around the runtime API
 
 ## Useful commands
 
@@ -52,7 +54,7 @@ Run the runtime prototype:
 
 ```bash
 npm run build --workspace @codegraph/runtime
-npm run start --workspace @codegraph/runtime -- /workspace README.md 1 codegraph
+npm run start --workspace @codegraph/runtime -- explain /workspace examples/demo.py 10 create
 ```
 
 Run the local runtime API:
@@ -62,7 +64,7 @@ npm run serve --workspace @codegraph/runtime -- 4311
 curl http://127.0.0.1:4311/health
 ```
 
-Available deterministic API endpoints:
+Available API endpoints:
 
 - `POST /v1/tools/explain-selection`
 - `POST /v1/tools/find-definition`
@@ -70,6 +72,14 @@ Available deterministic API endpoints:
 - `POST /v1/tools/logical-section`
 - `POST /v1/sessions/explain-selection`
 - `POST /v1/sessions/followup`
+
+Optional enrichment:
+
+```bash
+export CODEGRAPH_API_KEY="..."
+export CODEGRAPH_ENRICH=1
+# or pass "enrich": true in the request body
+```
 
 Session follow-up actions:
 
@@ -88,7 +98,8 @@ Session follow-up actions:
 
 ## Guardrails
 
-- Do not add cloud-only dependencies for MVP.
+- Do not require a cloud backend for basic repository intelligence.
 - Do not add arbitrary execution capabilities.
 - Keep all file access workspace-bounded.
 - Prefer building a thin vertical slice before broadening architecture.
+- Keep enrichment optional and never let model output invent unsupported sources.

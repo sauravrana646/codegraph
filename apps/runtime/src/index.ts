@@ -3,12 +3,19 @@ import { randomUUID } from "node:crypto";
 import http from "node:http";
 
 import { buildSelectionContext, findDefinition, findUsages, getLogicalSection } from "@codegraph/core";
+import { enrichSelectionContext } from "@codegraph/model-gateway";
 
 interface RuntimeRequestBody {
   rootPath: string;
   filePath: string;
   line: number;
   selectedText?: string;
+  enrich?: boolean;
+  provider?: {
+    apiKey?: string;
+    baseUrl?: string;
+    model?: string;
+  };
 }
 
 type SessionAction = "explain-selection" | "find-definition" | "find-usages" | "logical-section";
@@ -39,7 +46,9 @@ function isRuntimeRequestBody(value: unknown): value is RuntimeRequestBody {
     typeof candidate.rootPath === "string" &&
     typeof candidate.filePath === "string" &&
     typeof candidate.line === "number" &&
-    (candidate.selectedText === undefined || typeof candidate.selectedText === "string")
+    (candidate.selectedText === undefined || typeof candidate.selectedText === "string") &&
+    (candidate.enrich === undefined || typeof candidate.enrich === "boolean") &&
+    (candidate.provider === undefined || typeof candidate.provider === "object")
   );
 }
 
@@ -115,13 +124,29 @@ function mergeRequest(
     rootPath: overrides?.rootPath ?? baseRequest.rootPath,
     filePath: overrides?.filePath ?? baseRequest.filePath,
     line: overrides?.line ?? baseRequest.line,
-    selectedText: overrides?.selectedText ?? baseRequest.selectedText
+    selectedText: overrides?.selectedText ?? baseRequest.selectedText,
+    enrich: overrides?.enrich ?? baseRequest.enrich,
+    provider: overrides?.provider ?? baseRequest.provider
   };
+}
+
+async function explainWithOptionalEnrichment(request: RuntimeRequestBody) {
+  const deterministic = await buildSelectionContext({
+    rootPath: request.rootPath,
+    filePath: request.filePath,
+    line: request.line,
+    selectedText: request.selectedText
+  });
+
+  return enrichSelectionContext(deterministic, {
+    enabled: request.enrich,
+    provider: request.provider
+  });
 }
 
 async function runAction(action: SessionAction, request: RuntimeRequestBody): Promise<unknown> {
   if (action === "explain-selection") {
-    return buildSelectionContext(request);
+    return explainWithOptionalEnrichment(request);
   }
 
   if (action === "find-definition") {
@@ -143,7 +168,12 @@ async function handleToolRequest(
     pruneExpiredSessions();
 
     if (request.method === "GET" && request.url === "/health") {
-      writeJson(response, 200, { ok: true, service: "codegraph-runtime", activeSessions: sessions.size });
+      writeJson(response, 200, {
+        ok: true,
+        service: "codegraph-runtime",
+        activeSessions: sessions.size,
+        enrichmentConfigured: Boolean(process.env.CODEGRAPH_API_KEY || process.env.OPENAI_API_KEY)
+      });
       return;
     }
 
@@ -157,13 +187,13 @@ async function handleToolRequest(
     if (request.url === "/v1/sessions/explain-selection") {
       if (!isRuntimeRequestBody(payload)) {
         writeJson(response, 400, {
-          error: "Invalid request body. Expected { rootPath, filePath, line, selectedText? }"
+          error: "Invalid request body. Expected { rootPath, filePath, line, selectedText?, enrich?, provider? }"
         });
         return;
       }
 
       const session = createSession(payload);
-      const result = await buildSelectionContext(payload);
+      const result = await explainWithOptionalEnrichment(payload);
       writeJson(response, 200, {
         sessionId: session.sessionId,
         createdAt: session.createdAt,
@@ -203,13 +233,13 @@ async function handleToolRequest(
 
     if (!isRuntimeRequestBody(payload)) {
       writeJson(response, 400, {
-        error: "Invalid request body. Expected { rootPath, filePath, line, selectedText? }"
+        error: "Invalid request body. Expected { rootPath, filePath, line, selectedText?, enrich?, provider? }"
       });
       return;
     }
 
     if (request.url === "/v1/tools/explain-selection") {
-      writeJson(response, 200, await buildSelectionContext(payload));
+      writeJson(response, 200, await explainWithOptionalEnrichment(payload));
       return;
     }
 
@@ -253,11 +283,12 @@ async function runExplainCommand(args: string[]): Promise<void> {
     return;
   }
 
-  const result = await buildSelectionContext({
+  const result = await explainWithOptionalEnrichment({
     rootPath,
     filePath,
     line,
-    selectedText: selectedTextParts.join(" ") || undefined
+    selectedText: selectedTextParts.join(" ") || undefined,
+    enrich: process.env.CODEGRAPH_ENRICH === "1" || process.env.CODEGRAPH_ENRICH === "true"
   });
 
   console.log(JSON.stringify(result, null, 2));
@@ -285,15 +316,21 @@ async function runServerCommand(args: string[]): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const [, , command = "explain", ...args] = process.argv;
+  const [, , firstArg, ...rest] = process.argv;
 
-  if (command === "serve") {
-    await runServerCommand(args);
+  if (!firstArg || firstArg === "explain") {
+    await runExplainCommand(firstArg === "explain" ? rest : firstArg ? [firstArg, ...rest] : []);
     return;
   }
 
-  if (command === "explain") {
-    await runExplainCommand(args);
+  if (firstArg === "serve") {
+    await runServerCommand(rest);
+    return;
+  }
+
+  // Backward-compatible: treat a bare workspace path as explain mode.
+  if (firstArg.startsWith("/") || firstArg.startsWith(".")) {
+    await runExplainCommand([firstArg, ...rest]);
     return;
   }
 

@@ -6,6 +6,7 @@
     { "path": "./packages/security" },
     { "path": "./packages/language-intelligence" },
     { "path": "./packages/core" },
+    { "path": "./packages/model-gateway" },
     { "path": "./apps/runtime" },
     { "path": "./apps/ide-vscode" }
   ]
