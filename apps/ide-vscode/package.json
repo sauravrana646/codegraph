@@ -13,7 +13,9 @@
     "Other"
   ],
   "activationEvents": [
-    "onCommand:codegraph.explainSelection"
+    "onCommand:codegraph.explainSelection",
+    "onCommand:codegraph.findDefinition",
+    "onCommand:codegraph.findUsages"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -21,6 +23,14 @@
       {
         "command": "codegraph.explainSelection",
         "title": "Codegraph: Explain Selection"
+      },
+      {
+        "command": "codegraph.findDefinition",
+        "title": "Codegraph: Find Definition"
+      },
+      {
+        "command": "codegraph.findUsages",
+        "title": "Codegraph: Find Usages"
       }
     ]
   },

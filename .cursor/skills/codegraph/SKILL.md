@@ -19,6 +19,7 @@ The repository currently contains the first implementation scaffold:
 - security primitives for path/symlink checks and secret redaction in `packages/security`
 - deterministic Python explanation assembly in `packages/core`
 - deterministic helpers now include definition lookup, usage lookup, and logical section extraction
+- the extension now exposes Explain Selection, Find Definition, and Find Usages commands
 
 ## Architecture rules
 
@@ -34,7 +35,7 @@ The repository currently contains the first implementation scaffold:
 1. Improve logical section resolution beyond current symbol scope handling
 2. Improve bounded reference and related-code retrieval
 3. Add provider abstraction and explanation normalization
-4. Expand the VS Code/Cursor extension with follow-up UX
+4. Expand the VS Code/Cursor extension with follow-up UX beyond the current in-memory session
 5. Expose deterministic functions through a more formal runtime/tool API
 
 ## Useful commands

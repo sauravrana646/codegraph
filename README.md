@@ -115,8 +115,18 @@ Current behavior:
 - performs deterministic Python-aware symbol discovery and bounded reference search
 - opens a side panel with summary, sources, inferred claims, and caveats
 - lets you click cited source locations in the panel to jump back into the editor
+- adds command palette actions for `Codegraph: Find Definition` and `Codegraph: Find Usages`
+- keeps a lightweight in-memory session for the current explanation target so related commands can reuse it
 - keeps a raw JSON trace in the `Codegraph` output channel for debugging
 - does not call an LLM yet
+
+Useful commands in Cursor/VS Code:
+
+```text
+Codegraph: Explain Selection
+Codegraph: Find Definition
+Codegraph: Find Usages
+```
 
 ## Use this project as a Cursor skill
 

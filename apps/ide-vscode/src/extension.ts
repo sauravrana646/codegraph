@@ -1,10 +1,26 @@
 import * as vscode from "vscode";
 import * as path from "node:path";
 
-import { buildSelectionContext } from "@codegraph/core";
+import { buildSelectionContext, findDefinition, findUsages } from "@codegraph/core";
+
+type SelectionContext = Awaited<ReturnType<typeof buildSelectionContext>>;
+
+interface CodeUnderstandingSession {
+  request: {
+    rootPath: string;
+    filePath: string;
+    line: number;
+    selectedText?: string;
+  };
+  result: SelectionContext;
+}
+
+type SourceLike = { file: string; line: number; excerpt?: string };
 
 let outputChannel: vscode.OutputChannel | undefined;
 let panel: vscode.WebviewPanel | undefined;
+let currentSession: CodeUnderstandingSession | undefined;
+let panelMessageHooked = false;
 
 function getOutputChannel(): vscode.OutputChannel {
   if (!outputChannel) {
@@ -15,51 +31,128 @@ function getOutputChannel(): vscode.OutputChannel {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
-  context.subscriptions.push(
-    vscode.window.registerWebviewPanelSerializer("codegraph.explanation", {
-      async deserializeWebviewPanel(webviewPanel: vscode.WebviewPanel): Promise<void> {
-        panel = webviewPanel;
-      }
-    })
-  );
+  const explainCommand = vscode.commands.registerCommand("codegraph.explainSelection", async () => {
+    const request = getActiveRequest();
 
-  const disposable = vscode.commands.registerCommand("codegraph.explainSelection", async () => {
-    const editor = vscode.window.activeTextEditor;
-
-    if (!editor) {
-      void vscode.window.showWarningMessage("Codegraph needs an active editor to explain a selection.");
+    if (!request) {
       return;
     }
 
-    const workspaceFolder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
+    await runExplainSelection(context, request);
+  });
 
-    if (!workspaceFolder) {
-      void vscode.window.showWarningMessage("Codegraph could not determine the current workspace folder.");
+  const definitionCommand = vscode.commands.registerCommand("codegraph.findDefinition", async () => {
+    const request = getActiveRequest() ?? currentSession?.request;
+
+    if (!request) {
+      void vscode.window.showWarningMessage("Codegraph needs an active editor or an existing session.");
       return;
     }
 
-    const selection = editor.selection;
-    const selectedText = editor.document.getText(selection).trim() || undefined;
-    const filePath = vscode.workspace.asRelativePath(editor.document.uri, false);
-    const line = selection.active.line + 1;
+    const definitions = await findDefinition(request);
 
-    const result = await buildSelectionContext({
-      rootPath: workspaceFolder.uri.fsPath,
-      filePath,
-      line,
-      selectedText
-    });
+    if (definitions.length === 0) {
+      void vscode.window.showInformationMessage("Codegraph did not find a matching definition.");
+      return;
+    }
 
-    const channel = getOutputChannel();
-    channel.clear();
-    channel.appendLine("Codegraph selection context");
-    channel.appendLine(JSON.stringify(result, null, 2));
+    await openFromCandidates(request.rootPath, definitions, "definition");
+  });
 
-    const summaryText = selectedText
-      ? `Prepared local context for "${selectedText}" (tier ${result.metadata.capabilityTier}).`
-      : `Prepared local context for ${filePath}:${line} (tier ${result.metadata.capabilityTier}).`;
+  const usagesCommand = vscode.commands.registerCommand("codegraph.findUsages", async () => {
+    const request = getActiveRequest() ?? currentSession?.request;
 
-    panel ??= vscode.window.createWebviewPanel(
+    if (!request) {
+      void vscode.window.showWarningMessage("Codegraph needs an active editor or an existing session.");
+      return;
+    }
+
+    const usages = await findUsages(request);
+
+    if (usages.length === 0) {
+      void vscode.window.showInformationMessage("Codegraph did not find any usages.");
+      return;
+    }
+
+    await openFromCandidates(request.rootPath, usages, "usage");
+  });
+
+  context.subscriptions.push(explainCommand, definitionCommand, usagesCommand, getOutputChannel());
+}
+
+export function deactivate(): void {
+  outputChannel?.dispose();
+  outputChannel = undefined;
+  panel?.dispose();
+  panel = undefined;
+  currentSession = undefined;
+  panelMessageHooked = false;
+}
+
+function getActiveRequest():
+  | {
+      rootPath: string;
+      filePath: string;
+      line: number;
+      selectedText?: string;
+    }
+  | undefined {
+  const editor = vscode.window.activeTextEditor;
+
+  if (!editor) {
+    void vscode.window.showWarningMessage("Codegraph needs an active editor.");
+    return undefined;
+  }
+
+  const workspaceFolder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
+
+  if (!workspaceFolder) {
+    void vscode.window.showWarningMessage("Codegraph could not determine the current workspace folder.");
+    return undefined;
+  }
+
+  const selection = editor.selection;
+
+  return {
+    rootPath: workspaceFolder.uri.fsPath,
+    filePath: vscode.workspace.asRelativePath(editor.document.uri, false),
+    line: selection.active.line + 1,
+    selectedText: editor.document.getText(selection).trim() || undefined
+  };
+}
+
+async function runExplainSelection(
+  context: vscode.ExtensionContext,
+  request: { rootPath: string; filePath: string; line: number; selectedText?: string }
+): Promise<void> {
+  const result = await buildSelectionContext(request);
+  currentSession = { request, result };
+
+  const channel = getOutputChannel();
+  channel.clear();
+  channel.appendLine("Codegraph selection context");
+  channel.appendLine(JSON.stringify(result, null, 2));
+
+  ensurePanel(context);
+
+  if (!panel) {
+    return;
+  }
+
+  panel.title = request.selectedText ? `Codegraph: ${request.selectedText}` : `Codegraph: ${request.filePath}:${request.line}`;
+  panel.webview.html = renderExplanationHtml(request.filePath, request.line, result);
+  panel.reveal(vscode.ViewColumn.Beside, true);
+
+  const summaryText = request.selectedText
+    ? `Prepared local context for "${request.selectedText}" (tier ${result.metadata.capabilityTier}).`
+    : `Prepared local context for ${request.filePath}:${request.line} (tier ${result.metadata.capabilityTier}).`;
+
+  void vscode.window.showInformationMessage(summaryText);
+}
+
+function ensurePanel(context: vscode.ExtensionContext): void {
+  if (!panel) {
+    panel = vscode.window.createWebviewPanel(
       "codegraph.explanation",
       "Codegraph Explanation",
       vscode.ViewColumn.Beside,
@@ -68,30 +161,40 @@ export function activate(context: vscode.ExtensionContext): void {
         enableScripts: true
       }
     );
-    if (!panel.webview.html) {
-      panel.webview.onDidReceiveMessage((message) => {
-        if (message?.type !== "openSource") {
-          return;
-        }
+    panel.onDidDispose(() => {
+      panel = undefined;
+      panelMessageHooked = false;
+    }, undefined, context.subscriptions);
+  }
 
-        void openSourceLocation(workspaceFolder.uri.fsPath, message.file, message.line);
-      }, undefined, context.subscriptions);
-    }
-    panel.title = selectedText ? `Codegraph: ${selectedText}` : `Codegraph: ${filePath}:${line}`;
-    panel.webview.html = renderExplanationHtml(filePath, line, result);
-    panel.reveal(vscode.ViewColumn.Beside, true);
-
-    void vscode.window.showInformationMessage(summaryText);
-  });
-
-  context.subscriptions.push(disposable, getOutputChannel());
+  if (!panelMessageHooked) {
+    panel.webview.onDidReceiveMessage((message) => {
+      void handlePanelMessage(message);
+    }, undefined, context.subscriptions);
+    panelMessageHooked = true;
+  }
 }
 
-export function deactivate(): void {
-  outputChannel?.dispose();
-  outputChannel = undefined;
-  panel?.dispose();
-  panel = undefined;
+async function handlePanelMessage(message: unknown): Promise<void> {
+  if (!message || typeof message !== "object") {
+    return;
+  }
+
+  const parsed = message as { type?: string; file?: string; line?: number };
+
+  if (parsed.type === "openSource" && parsed.file && currentSession) {
+    await openSourceLocation(currentSession.request.rootPath, parsed.file, parsed.line ?? 1);
+    return;
+  }
+
+  if (parsed.type === "findDefinition") {
+    await vscode.commands.executeCommand("codegraph.findDefinition");
+    return;
+  }
+
+  if (parsed.type === "findUsages") {
+    await vscode.commands.executeCommand("codegraph.findUsages");
+  }
 }
 
 function escapeHtml(value: string | undefined): string {
@@ -111,9 +214,7 @@ function renderList(items: string[]): string {
     : "<p>None.</p>";
 }
 
-function renderSourceList(
-  items: Array<{ file: string; line: number; excerpt?: string }>
-): string {
+function renderSourceList(items: SourceLike[]): string {
   if (items.length === 0) {
     return "<p>No source locations available.</p>";
   }
@@ -139,7 +240,7 @@ function renderSourceList(
 function renderExplanationHtml(
   filePath: string,
   line: number,
-  result: Awaited<ReturnType<typeof buildSelectionContext>>
+  result: SelectionContext
 ): string {
   const inferredClaims = result.explanation.inferredClaims ?? [];
 
@@ -168,6 +269,19 @@ function renderExplanationHtml(
           border-radius: 999px;
           background: var(--vscode-badge-background);
           color: var(--vscode-badge-foreground);
+        }
+        .actions {
+          display: flex;
+          gap: 8px;
+          margin-top: 12px;
+        }
+        .action-button {
+          border: 1px solid var(--vscode-button-border, transparent);
+          background: var(--vscode-button-background);
+          color: var(--vscode-button-foreground);
+          border-radius: 6px;
+          padding: 6px 10px;
+          cursor: pointer;
         }
         pre {
           white-space: pre-wrap;
@@ -198,6 +312,10 @@ function renderExplanationHtml(
         <span class="pill">Confidence ${result.metadata.confidence.toFixed(2)}</span>
         <span class="pill">Source ${escapeHtml(result.metadata.source)}</span>
       </p>
+      <div class="actions">
+        <button class="action-button" data-action="findDefinition">Find Definition</button>
+        <button class="action-button" data-action="findUsages">Find Usages</button>
+      </div>
 
       <section>
         <h2>Summary</h2>
@@ -262,6 +380,13 @@ function renderExplanationHtml(
             });
           });
         });
+        document.querySelectorAll(".action-button").forEach((node) => {
+          node.addEventListener("click", () => {
+            vscode.postMessage({
+              type: node.getAttribute("data-action")
+            });
+          });
+        });
       </script>
     </body>
   </html>`;
@@ -278,4 +403,32 @@ async function openSourceLocation(rootPath: string, relativeFilePath: string, li
   const position = new vscode.Position(targetLine, 0);
   editor.selection = new vscode.Selection(position, position);
   editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+}
+
+async function openFromCandidates(rootPath: string, items: SourceLike[], noun: string): Promise<void> {
+  if (items.length === 1) {
+    const item = items[0];
+
+    if (item) {
+      await openSourceLocation(rootPath, item.file, item.line);
+    }
+
+    return;
+  }
+
+  const picked = await vscode.window.showQuickPick(
+    items.map((item) => ({
+      label: `${item.file}:${item.line}`,
+      description: noun,
+      detail: item.excerpt,
+      item
+    })),
+    {
+      placeHolder: `Select a ${noun} to open`
+    }
+  );
+
+  if (picked) {
+    await openSourceLocation(rootPath, picked.item.file, picked.item.line);
+  }
 }
