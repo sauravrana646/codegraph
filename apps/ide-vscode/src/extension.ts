@@ -595,13 +595,9 @@ async function handOffToCursorAgent(
 }
 
 function buildAskAgentQuery(result: SelectionContext | EnrichedSelectionContext): string {
+  // Always-on Agent call with a *small* prompt. Agent pulls code via Codegraph tools.
   return [
-    "Use the Codegraph skill if available.",
-    "AST + LSP context below is grounding only — YOU write the final tutoring explanation in this chat.",
-    "Do not ask for API keys.",
-    "Reply here in the Agent window (learn-codebase style).",
-    "This message was auto-submitted from Codegraph Live Explain — answer immediately.",
-    "",
+    "Use the Codegraph skill / MCP tools.",
     buildAgentHandoffPrompt(result)
   ].join("\n");
 }
@@ -778,11 +774,13 @@ async function runExplainSelection(
 
   const bridgePayload = {
     summary: grounded.explanation.summary,
-    whatItDoes: grounded.explanation.whatItDoes,
-    whyItExists: grounded.explanation.whyItExists,
-    howItWorks: grounded.explanation.howItWorks,
-    codebaseUsage: grounded.explanation.codebaseUsage,
-    sources: (grounded.explanation.sources ?? []).map((source) => `${source.file}:${source.line}`)
+    whatItDoes: "",
+    whyItExists: "",
+    howItWorks: "",
+    codebaseUsage: "",
+    sources: (grounded.explanation.sources ?? [])
+      .slice(0, 3)
+      .map((source) => `${source.file}:${source.line}`)
   };
 
   const editor = vscode.window.activeTextEditor;

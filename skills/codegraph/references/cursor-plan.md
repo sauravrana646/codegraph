@@ -15,10 +15,10 @@ Details: [references/live-tutoring.md](references/live-tutoring.md).
 
 ## Agent mode
 
-1. Extension builds deterministic context (+ Live Explain bridge files when enabled).
-2. Enrichment + narrative explanation are handed to Cursor/Claude agent (subscription model) via watcher or explicit handoff.
+1. Extension may gather local hints, but the Agent prompt is a **slim pointer** (file / line / symbol + tool instructions).
+2. Live Explain / Ask Agent always hands off to Cursor/Claude Agent (subscription model); the Agent **pulls** facts via Codegraph tools.
 3. Never ask for API keys.
-4. Agent must cite only Codegraph `file:line` sources.
+4. Agent must cite only Codegraph `file:line` sources returned by tools.
 
 ## API key mode
 

@@ -63,16 +63,23 @@ build_prompt_from_state() {
   STATE_FILE="$STATE_FILE" python3 - <<'PY'
 import json, os, pathlib
 state = json.loads(pathlib.Path(os.environ["STATE_FILE"]).read_text())
+symbol = state.get("selection") or state.get("selectedText") or "(cursor only)"
 print(
-    "Use the Codegraph skill (tutoring style).\n"
-    "Live cursor moved — explain this location.\n"
-    "Do not ask for API keys.\n\n"
+    "Use the Codegraph skill / MCP tools.\n"
+    "Codegraph Live Explain — answer in this Agent chat.\n"
+    "Do not ask for API keys.\n"
+    "Do NOT wait for large pasted code; fetch what you need with tools.\n\n"
+    "TARGET:\n"
     f"rootPath: {state.get('rootPath', '')}\n"
     f"filePath: {state.get('filePath') or state.get('path', '')}\n"
     f"line: {state.get('line', 1)}\n"
-    f"selection: {state.get('selection') or state.get('selectedText') or '(cursor only)'}\n\n"
-    "1. Call explain_selection with enrich omitted/false.\n"
-    "2. Enrich + explain clearly; cite only tool file:line sources.\n"
+    f"symbol: {symbol}\n\n"
+    "REQUIRED TOOL FLOW (pull data yourself):\n"
+    "1) Call Codegraph explain_selection with enrich omitted/false for this filePath/line/symbol.\n"
+    "2) If needed, call find_definition and/or find_usages.\n"
+    "3) Optionally logical_section for surrounding class/function.\n"
+    "4) Only after tools return, write the tutoring answer.\n\n"
+    "Cite only tool file:line sources; never invent files/symbols; keep it concise.\n"
 )
 PY
 }

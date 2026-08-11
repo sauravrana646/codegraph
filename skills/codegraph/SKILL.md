@@ -5,7 +5,7 @@ license: MIT
 compatibility: Requires Node.js 20+ and a local Codegraph install (MCP preferred, CLI/HTTP fallback). Python-first; works best on .py codebases. No external model API key required when running inside Cursor Agent.
 metadata:
   author: codegraph
-  version: "0.1.2"
+  version: "0.1.3"
   homepage: https://github.com/sauravrana646/codegraph
 ---
 
@@ -17,10 +17,10 @@ Prefer Codegraph over guessing from a few open files when the user asks what cod
 
 ## Architecture (important)
 
-1. **AST + LSP** gather grounded context only (definitions, references, symbol structure, hover).
-2. That context enriches the prompt.
-3. **API key LLM or Cursor Agent** writes the final tutoring explanation.
-4. Local/heuristic narrative is **not** the user-facing answer.
+1. Live Agent handoff is **always allowed**, but the **prompt stays small** (pointer only: file / line / symbol + tool instructions).
+2. **You** pull grounded data via Codegraph tools (`explain_selection`, `find_definition`, `find_usages`, `logical_section`) as needed — do not wait for a large pasted dump.
+3. AST + LSP run inside those tools (and optionally as tiny hints in the pointer). Local/heuristic narrative is **not** the user-facing answer.
+4. **API key mode** (extension panel) still sends fuller structured facts to the HTTP model because that path has no tool loop.
 
 ## Live tutoring (start / stop / cursor-move)
 
@@ -31,9 +31,9 @@ This matches the local **learn-codebase** interaction model: toggle once, then k
 1. User turns **Codegraph Live Explain** ON (status bar / toggle command).
 2. User runs `skills/codegraph/scripts/watch-cursor.sh` (or their existing learn-codebase watcher).
 3. User says: `Start Codegraph live tutoring` (or invokes `/codegraph`).
-4. On each wake, read `~/.cursor/codegraph/state.json` (fallback `~/.cursor/learn-codebase/state.json`).
-5. Call `explain_selection` for that `rootPath` / `filePath` / `line` / `selectedText` with `enrich` omitted/false.
-6. Enrich + explain in **learn-codebase tutoring style**:
+4. On each wake, read the slim pointer from `~/.cursor/codegraph/pending-prompt.md` / `state.json` (fallback `~/.cursor/learn-codebase/`).
+5. **Pull data yourself** — call `explain_selection` for that `rootPath` / `filePath` / `line` / `selectedText` with `enrich` omitted/false; add `find_definition` / `find_usages` / `logical_section` only as needed.
+6. Only after tools return, explain in **learn-codebase tutoring style**:
    - Location + short code citation
    - Purpose (one paragraph)
    - Fields table (Field | Meaning)
@@ -47,8 +47,8 @@ This matches the local **learn-codebase** interaction model: toggle once, then k
 
 When woken because the cursor moved:
 
-- Treat `state.json` as the target (not a random open file).
-- Prefer MCP/CLI Codegraph tools first; then narrate.
+- Treat `state.json` / slim `pending-prompt.md` as the **target pointer** (not a full code dump).
+- Always call Codegraph tools first; then narrate from tool results.
 - Keep answers short unless the symbol is complex or the user asks to go deeper.
 - Do not ask for API keys.
 

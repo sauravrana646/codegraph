@@ -301,20 +301,18 @@ Because Cursor is VS Code-compatible, the extension can be developed with the no
 4. Start an Extension Development Host using the standard VS Code/Cursor extension-debug workflow.
 5. In the new host window, open a workspace with a Python file.
 6. Toggle **Codegraph: Toggle Live Explain Mode** once (or click the status bar item).
-7. Move the cursor / select symbols — the side panel updates continuously. No Command Palette on every move.
-8. Optionally click **Enrich & Explain with Agent** when you want subscription-model narrative.
+7. Move the cursor / select symbols — Agent mode auto-sends a **slim pointer** to Agent chat; Agent pulls details via Codegraph tools. API key mode updates the side panel.
+8. Optional: **Ask Cursor Agent** / Diagnose Live Explain from the Command Palette.
 
 Current behavior:
 
-- **Live Explain** — toggle once; auto-explains as you navigate (debounced, Python-first, in-panel)
-- gathers local selection context
-- performs deterministic Python-aware symbol discovery and bounded reference search
-- opens a side panel with summary, sources, inferred claims, caveats, and enrichment status
-- lets you click cited source locations in the panel to jump back into the editor
-- adds command palette actions for Live Explain, Explain Selection, Find Definition, and Find Usages
+- **Live Explain** — toggle once; auto-explains as you navigate (debounced, Python-first)
+- Agent mode: small handoff prompt (file/line/symbol + tool instructions); Agent fetches `explain_selection` / definitions / usages as needed
+- API key mode: deterministic gather + in-panel HTTP enrichment (full structured facts; no tool loop)
+- performs deterministic Python-aware symbol discovery and bounded reference search (used by tools / API path)
+- adds command palette actions for Live Explain, Explain Selection, Find Definition, Find Usages, Diagnose
 - keeps a lightweight in-memory session for the current explanation target so related commands can reuse it
-- keeps a raw JSON trace in the `Codegraph` output channel for debugging
-- agent enrichment is on-demand (does not spam chat during Live Explain); API key mode can enrich in-panel
+- keeps a raw JSON / handoff trace in the `Codegraph` output channel for debugging
 
 Useful settings:
 
@@ -322,22 +320,24 @@ Useful settings:
 codegraph.liveExplain.enabled              # Live Explain on/off (also toggled from status bar)
 codegraph.liveExplain.debounceMs           # delay after cursor moves (default 450)
 codegraph.liveExplain.pythonOnly           # only auto-explain Python (default on)
-codegraph.modelAccess.useBuiltInAgent      # agent does enrichment + explanation when asked (default on)
-codegraph.modelAccess.useApiKeyProvider    # API key does enrichment (default off)
+codegraph.liveExplain.autoSubmitAgent      # auto-send slim prompt to Agent (default on)
+codegraph.modelAccess.useBuiltInAgent      # Agent path (default on)
+codegraph.modelAccess.useApiKeyProvider    # API key path (default off)
 codegraph.modelAccess.autoEnrichOnExplain  # auto handoff after *manual* Explain only (default off)
 codegraph.enrichment.apiKey                # only for API key mode
 codegraph.enrichment.baseUrl
 codegraph.enrichment.model
 ```
 
-Pick one path: **agent** (subscription) or **API key**. The Explain panel checkboxes enforce that.
+Pick one path: **agent** (subscription) or **API key**. The settings enforce that.
 
 Useful commands in Cursor/VS Code:
 
 ```text
 Codegraph: Toggle Live Explain Mode
 Codegraph: Explain Selection
-Codegraph: Enrich & Explain with Agent
+Codegraph: Ask Cursor Agent
+Codegraph: Diagnose Live Explain
 Codegraph: Find Definition
 Codegraph: Find Usages
 ```

@@ -72,45 +72,36 @@ function writePendingPrompt(
   }
 ): void {
   ensureDir(dir);
-  const groundedBlock = grounded
-    ? [
-        "",
-        "Deterministic Codegraph facts (use these; do not invent sources):",
-        `Summary: ${grounded.summary ?? "(none)"}`,
-        `What it does: ${grounded.whatItDoes ?? "(none)"}`,
-        `Purpose / use: ${grounded.whyItExists ?? "(none)"}`,
-        `How it works: ${grounded.howItWorks ?? "(none)"}`,
-        `Codebase usage: ${grounded.codebaseUsage ?? "(none)"}`,
-        "Sources:",
-        ...(grounded.sources ?? []).map((source) => `- ${source}`),
-        ""
-      ]
-    : [""];
-
+  // Slim pointer only — Agent pulls AST/LSP facts via Codegraph tools (token-efficient).
+  const hintSources = (grounded?.sources ?? []).slice(0, 3);
   const prompt = [
-    "Use the Codegraph / learn-codebase tutoring style.",
-    "Live cursor moved — explain this location.",
+    "Use the Codegraph skill / MCP tools.",
+    "Codegraph Live Explain — answer in this Agent chat.",
     "Do not ask for API keys.",
-    "No UI chatter about toggles, modes, or enrichment status.",
+    "Do NOT wait for large pasted code; fetch what you need with tools.",
     "",
+    "TARGET:",
     `rootPath: ${state.rootPath}`,
     `filePath: ${state.filePath}`,
-    `absolutePath: ${state.absolutePath}`,
     `line: ${state.line}`,
-    `column: ${state.column}`,
-    `selection: ${state.selection || "(cursor only)"}`,
-    `languageId: ${state.languageId}`,
-    ...groundedBlock,
-    "Respond exactly like learn-codebase:",
-    "AST/LSP evidence above is CONTEXT ONLY — you write the final tutoring explanation.",
-    "1. Location + short code citation",
-    "2. Purpose: one concrete paragraph",
-    "3. Fields table (Field | Meaning)",
-    "4. Valid shapes / examples when useful",
-    "5. Docstring/validator notes",
-    "6. End with: Ask about that, or keep moving.",
-    "Cite only tool/fact file:line sources.",
-    "Do not dump raw AST facts to the user."
+    `symbol: ${state.selection || "(cursor only)"}`,
+    hintSources.length ? `sourceHints: ${hintSources.join(", ")}` : "sourceHints: (resolve via tools)",
+    "",
+    "REQUIRED TOOL FLOW (pull data yourself):",
+    "1) Call Codegraph `explain_selection` with enrich omitted/false for this filePath/line/symbol.",
+    "2) If needed, call `find_definition` and/or `find_usages`.",
+    "3) Optionally `logical_section` for surrounding class/function.",
+    "4) Only after tools return, write the tutoring answer.",
+    "",
+    "ANSWER FORMAT (learn-codebase style):",
+    "1) Location + short code citation (from tool sources only)",
+    "2) Purpose",
+    "3) Fields table (Field | Meaning) when applicable",
+    "4) Valid shapes / examples when useful",
+    "5) Docstring/validator notes",
+    "6) End with: Ask about that, or keep moving.",
+    "",
+    "Rules: cite only tool file:line sources; never invent files/symbols; keep it concise."
   ].join("\n");
   fs.writeFileSync(path.join(dir, "pending-prompt.md"), `${prompt}\n`, "utf8");
 }

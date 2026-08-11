@@ -468,37 +468,49 @@ export function applyEnrichmentText(
 
 /** Compact handoff prompt for Cursor/Claude Agent (subscription model, no API key). */
 export function buildAgentHandoffPrompt(result: SelectionContextResultLike): string {
-  const sources = (result.explanation.sources ?? [])
-    .slice(0, 8)
-    .map((source) => `- ${source.file}:${source.line}${source.excerpt ? `\n  ${source.excerpt}` : ""}`)
-    .join("\n");
+  return buildSlimAgentHandoffPrompt(result);
+}
+
+/**
+ * Token-efficient Agent handoff: send only a pointer + instructions.
+ * Agent must pull definitions/usages/structure via Codegraph tools as needed.
+ */
+export function buildSlimAgentHandoffPrompt(result: SelectionContextResultLike): string {
+  const target = result.context.target;
+  const symbol = target.selectedText?.trim() || "(cursor only)";
+  const def = result.context.definitions[0];
+  const refCount = result.context.references.length;
+  const rootPath = result.workspace.rootPath || "(current workspace root)";
 
   return [
-    "You are a calm codebase tutor (learn-codebase style).",
-    "AST + LSP evidence below is CONTEXT ONLY. You write the final explanation.",
-    "No API keys needed. Do not invent sources.",
+    "Codegraph Live Explain — answer in this Agent chat.",
+    "Do not ask for API keys.",
+    "Do NOT wait for large pasted code; fetch what you need with tools.",
     "",
-    "Write:",
-    "1) Location + short code citation",
+    "TARGET:",
+    `rootPath: ${rootPath}`,
+    `filePath: ${target.file}`,
+    `line: ${target.line ?? 1}`,
+    `symbol: ${symbol}`,
+    `resolution: ${result.metadata.source} tier=${result.metadata.capabilityTier}`,
+    def ? `bestDefinitionHint: ${def.file}:${def.line}` : "bestDefinitionHint: (resolve via tools)",
+    `knownReferenceCount: ${refCount}`,
+    "",
+    "REQUIRED TOOL FLOW (pull data yourself):",
+    "1) Call Codegraph `explain_selection` with enrich omitted/false for this filePath/line/symbol.",
+    "2) If needed, call `find_definition` and/or `find_usages`.",
+    "3) Optionally `logical_section` for surrounding class/function.",
+    "4) Only after tools return, write the tutoring answer.",
+    "",
+    "ANSWER FORMAT (learn-codebase style):",
+    "1) Location + short code citation (from tool sources only)",
     "2) Purpose",
-    "3) Fields table (Field | Meaning)",
+    "3) Fields table (Field | Meaning) when applicable",
     "4) Valid shapes / examples when useful",
     "5) Docstring/validator notes",
     "6) End with: Ask about that, or keep moving.",
     "",
-    `Target: ${result.context.target.file}:${result.context.target.line}${
-      result.context.target.selectedText ? ` (${result.context.target.selectedText})` : ""
-    }`,
-    `Resolution: ${result.metadata.source} tier=${result.metadata.capabilityTier}`,
-    "",
-    "AST facts:",
-    result.explanation.howItWorks ?? "(none)",
-    "",
-    "Reference index:",
-    result.explanation.codebaseUsage ?? "(none)",
-    "",
-    "Sources (authoritative):",
-    sources || "(none)"
+    "Rules: cite only tool file:line sources; never invent files/symbols; keep it concise."
   ].join("\n");
 }
 
