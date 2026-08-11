@@ -33,7 +33,8 @@ IDE event
 - primary language: **Python**
 - primary IDE path: **VS Code-compatible**
 - runtime architecture: **local-first**
-- LSP ownership: **hybrid**
+- explain/live path: **pointer + source window** (no AST/LSP context packs on Agent, API key, MCP, or CLI)
+- location tools: optional `file:line` lookups; IDE LSP gather is **not** part of the explain architecture
 
 ## System architecture
 
@@ -142,6 +143,12 @@ interface ResolutionMetadata {
 - variables
 - logical section boundaries
 
+### Tier 1 — Source window
+
+- nearby lines around the cursor
+- bounded logical section excerpts
+- no AST/LSP structure dumps in explain payloads
+
 ### Tier 2 — Symbol
 
 - definitions
@@ -149,7 +156,9 @@ interface ResolutionMetadata {
 - scope
 - import/export mapping where supported
 
-### Tier 3 — LSP
+### Tier 3 — External language server (optional research)
+
+Not part of Live Explain / enrichment prompts:
 
 - go to definition
 - find references

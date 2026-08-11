@@ -2,10 +2,10 @@
 
 This is the interactive loop that matches the local **learn-codebase** skill pattern:
 
-1. Toggle Live Explain **once** (status bar / Command Palette / panel).
+1. Toggle Live Explain **once** (status bar / Command Palette).
 2. Extension writes cursor state on every move (no Command Palette per symbol).
-3. A small watcher / auto-handoff wakes Cursor Agent with a **slim pointer** (file / line / symbol + tool instructions) — not a large AST dump.
-4. The agent **pulls** grounded facts via Codegraph tools, then tutors/explains.
+3. Auto-handoff / watcher wakes Cursor Agent with a **slim pointer** only (`codegraph-slim-v3`).
+4. Agent **reads the source** (or a bounded section tool) and explains — no AST/LSP context packs on any path.
 
 ## Runtime files
 
@@ -16,7 +16,7 @@ Primary (Codegraph):
   enabled            # present only while Live Explain is ON
   state.json         # latest path / line / selection
   wake.log           # append-only cursor-move events
-  pending-prompt.md  # slim pointer + required tool flow (not a full code dump)
+  pending-prompt.md  # slim pointer (codegraph-slim-v3)
 ```
 
 Compatibility mirror (so an existing learn-codebase watcher still works):
@@ -36,63 +36,46 @@ Settings:
 
 ## Start
 
-1. Install/reload the Codegraph VSIX.
+1. Install/reload the Codegraph VSIX (**0.1.2+**).
 2. Install this skill (`npm run install:skill` or copy `skills/codegraph` → `~/.cursor/skills/codegraph`).
-3. In a terminal:
+3. In a terminal (optional watcher):
 
    ```bash
    chmod +x skills/codegraph/scripts/watch-cursor.sh
    skills/codegraph/scripts/watch-cursor.sh
    ```
 
-   Or point at your existing learn-codebase dir:
-
-   ```bash
-   CODEGRAPH_WATCH_DIR=~/.cursor/learn-codebase skills/codegraph/scripts/watch-cursor.sh
-   ```
-
 4. In Cursor: **Codegraph: Toggle Live Explain Mode** → ON.
 5. Open Agent chat once and say: `Start Codegraph live tutoring` (or `/codegraph`).
-6. Move the cursor / select symbols — watcher / auto-handoff wakes Agent with the slim pending prompt; Agent fetches details via tools.
+6. Move the cursor — Agent gets `codegraph-slim-v3` pointer and reads source itself.
 
 ## Stop
 
 1. Toggle Live Explain OFF (removes `enabled`).
-2. Stop the watcher (`Ctrl+C`).
+2. Stop the watcher (`Ctrl+C`) if running.
 3. Optionally tell Agent: `Stop live tutoring`.
 
 ## Agent behavior while tutoring
 
 When woken for a live cursor move:
 
-1. Read the slim pointer in `~/.cursor/codegraph/state.json` / `pending-prompt.md` (or the learn-codebase mirror).
-2. **Always pull data with tools** — call `explain_selection` with `enrich` omitted/false; then `find_definition` / `find_usages` / `logical_section` as needed. Do not invent from the pointer alone.
-3. Only after tools return, respond in **learn-codebase style**:
-   - Location + short code citation
-   - Purpose
-   - Fields table
-   - Valid shapes / examples when useful
-   - Docstring/validator notes
-   - End with: Ask about that, or keep moving.
-4. No UI chatter about toggles, modes, enrichment status, or pills.
-5. Do **not** ask for API keys.
-6. Keep token use low: small input prompt + selective tool calls beats dumping whole files into chat.
+1. Read the slim pointer in `~/.cursor/codegraph/state.json` / `pending-prompt.md`.
+2. Open/read the file around `line` (or `logical_section` / `explain_selection` for a bounded window).
+3. Optionally use `find_definition` / `find_usages` for `file:line` locations only.
+4. Respond in **learn-codebase style** (Purpose / Fields / Notes / keep moving).
+5. Do **not** ask for API keys, AST dumps, or LSP context.
 
-## API key mode (same tutoring card)
+## API key mode
 
-When Live Explain is on with **API key provider**:
-
-1. Panel shows a clean tutoring card (Purpose / Fields / Notes).
-2. Extension enriches that card in-panel via the OpenAI-compatible provider.
-3. No mode/toggle clutter in the panel — settings stay in VS Code Settings.
+1. Extension builds a **source window** + file:line index (no IDE LSP gather).
+2. Panel enriches via OpenAI-compatible provider.
+3. Still no AST/LSP context packs in the prompt — only the source window.
 
 ## What each piece owns
 
 | Piece | Role |
 | --- | --- |
-| Codegraph VSIX | Toggle, slim Agent handoff, writes bridge files on cursor move |
-| `watch-cursor.sh` | Tails `wake.log`, rate-limits, wakes Agent with slim prompt |
-| This skill | Tutoring instructions + **required tool pull** for grounded explanations |
-| Deterministic core / MCP | Symbols, fields, validators, definitions, usages, sources (fetched on demand) |
-
-API key mode still uses the in-panel enrichment path (full structured facts over HTTP). Agent mode keeps prompts small and relies on tools.
+| Codegraph VSIX | Toggle, slim pointer handoff, bridge files |
+| `watch-cursor.sh` | Optional wake helper with the same slim prompt |
+| This skill | Tutoring instructions + read-source workflow |
+| MCP tools | Bounded section / location lookups on demand |

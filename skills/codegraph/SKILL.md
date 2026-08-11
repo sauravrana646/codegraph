@@ -5,7 +5,7 @@ license: MIT
 compatibility: Requires Node.js 20+ and a local Codegraph install (MCP preferred, CLI/HTTP fallback). Python-first; works best on .py codebases. No external model API key required when running inside Cursor Agent.
 metadata:
   author: codegraph
-  version: "0.1.4"
+  version: "0.1.5"
   homepage: https://github.com/sauravrana646/codegraph
 ---
 
@@ -17,10 +17,20 @@ Prefer Codegraph over guessing from a few open files when the user asks what cod
 
 ## Architecture (important)
 
-1. Live Agent handoff is **always allowed**, but the **prompt stays small** (pointer only: file / line / symbol + tool instructions).
-2. **You** pull grounded data via Codegraph tools (`explain_selection`, `find_definition`, `find_usages`, `logical_section`) as needed — do not wait for a large pasted dump.
-3. AST + LSP run inside those tools (and optionally as tiny hints in the pointer). Local/heuristic narrative is **not** the user-facing answer.
-4. **API key mode** (extension panel) still sends fuller structured facts to the HTTP model because that path has no tool loop.
+Codegraph does **not** ship AST/LSP context packs on any path.
+
+1. **Pointer** — Live Explain / Ask Agent send only `rootPath` / `filePath` / `line` / `symbol` (marker `codegraph-slim-v3`).
+2. **Read source** — open the file around that line, or call `logical_section` / `explain_selection` for a bounded source window.
+3. **Optional locations** — `find_definition` / `find_usages` return `file:line` only (no structure dumps).
+4. **You write the answer** — Agent (subscription) or API key enrichment produces tutoring prose. Local heuristics are never the user-facing explanation.
+
+### Paths
+
+| Path | What is sent | Who explains |
+| --- | --- | --- |
+| Built-in Agent (default) | Slim pointer only | Cursor/Claude Agent after reading source |
+| API key provider | Source window + file:line index over HTTP | Configured model |
+| MCP / CLI tools | Bounded section / locations on demand | Caller (usually Agent) |
 
 ## Live tutoring (start / stop / cursor-move)
 
@@ -32,25 +42,27 @@ This matches the local **learn-codebase** interaction model: toggle once, then k
 2. User runs `skills/codegraph/scripts/watch-cursor.sh` (or their existing learn-codebase watcher).
 3. User says: `Start Codegraph live tutoring` (or invokes `/codegraph`).
 4. On each wake, read the slim pointer from `~/.cursor/codegraph/pending-prompt.md` / `state.json` (fallback `~/.cursor/learn-codebase/`).
-5. **Pull data yourself** — call `explain_selection` for that `rootPath` / `filePath` / `line` / `selectedText` with `enrich` omitted/false; add `find_definition` / `find_usages` / `logical_section` only as needed.
-6. Only after tools return, explain in **learn-codebase tutoring style**:
+5. **Read the source** — open `filePath` around `line`, or call `logical_section` / `explain_selection` for a bounded window. Use `find_definition` / `find_usages` only for `file:line` locations.
+6. Explain in **learn-codebase tutoring style**:
    - Location + short code citation
    - Purpose (one paragraph)
    - Fields table (Field | Meaning)
    - Valid shapes / examples when useful
    - Docstring/validator notes
    - End with: Ask about that, or keep moving.
-   - Cite `file:line` only from tools
+   - Cite real `file:line`
    - No UI chatter about toggles, modes, or enrichment status
+   - Do **not** request AST/LSP context blobs
 
 ### Cursor-move flow
 
 When woken because the cursor moved:
 
-- Treat `state.json` / slim `pending-prompt.md` as the **target pointer** (not a full code dump).
-- Always call Codegraph tools first; then narrate from tool results.
+- Treat `state.json` / slim `pending-prompt.md` as the **target pointer** (not a code dump).
+- Read the source (or a bounded tool window); then narrate.
 - Keep answers short unless the symbol is complex or the user asks to go deeper.
 - Do not ask for API keys.
+- Do not ask for AST/LSP context.
 
 ### Stop
 
@@ -104,25 +116,22 @@ If none are available, read [references/install.md](references/install.md) and t
 ## Core workflow
 
 1. Identify `rootPath` (workspace root), `filePath` (workspace-relative), `line` (1-based), and optional `selectedText`.
-2. Call the smallest useful tool with `enrich` omitted/false:
-   - unknown symbol / “what is this?” → `explain_selection`
-   - “where defined?” → `find_definition`
-   - “where used?” → `find_usages`
-   - “show containing function/class” → `logical_section`
-3. Read the shared envelope:
-   - success: `{ ok: true, tool, data, metadata? }`
-   - failure: `{ ok: false, error: { code, message } }`
-4. Treat `data` + `metadata` as facts. Your prose is inference on top of those facts.
-5. Cite concrete `file:line` sources from the response. Do not invent sources.
+2. Prefer reading the file around that line. Optionally call the smallest useful tool with `enrich` omitted/false:
+   - unknown symbol / “what is this?” → `explain_selection` (bounded source window) or `logical_section`
+   - “where defined?” → `find_definition` (`file:line` only)
+   - “where used?” → `find_usages` (`file:line` only)
+3. Do **not** request AST/LSP context packs.
+4. Treat tool `data` as facts. Your prose is inference on top of those facts.
+5. Cite concrete `file:line` sources. Do not invent sources.
 
 ## Tool quick reference
 
 | Tool | Purpose | Key args |
 | --- | --- | --- |
-| `explain_selection` | Structured explanation + context | `rootPath`, `filePath`, `line`, `selectedText?` |
-| `find_definition` | Ranked definition candidates | same location args |
-| `find_usages` | Ranked usages (`call` / `attribute` / `import` / `mention`) | same location args |
-| `logical_section` | Surrounding section | same + `depth?: statement\|function\|class\|auto` |
+| `explain_selection` | Bounded source window for the target | `rootPath`, `filePath`, `line`, `selectedText?` |
+| `find_definition` | Ranked definition `file:line` candidates | same location args |
+| `find_usages` | Ranked usage `file:line` candidates | same location args |
+| `logical_section` | Surrounding section excerpt | same + `depth?: statement\|function\|class\|auto` |
 
 Details: [references/tools.md](references/tools.md)  
 Workflows: [references/workflows.md](references/workflows.md)

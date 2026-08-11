@@ -143,13 +143,15 @@ The index shall be incremental, asynchronous, and derived from workspace state.
 
 ## FR-005 Capability-based intelligence
 
-The system shall operate through capability tiers:
+The system shall operate through capability tiers for **indexing / navigation research**:
 
 - Tier 0 — Text
-- Tier 1 — AST
+- Tier 1 — Structural / source window
 - Tier 2 — Symbol
-- Tier 3 — LSP
+- Tier 3 — External language-server experiments (optional; not required for explain)
 - Tier 4 — Deep relationship intelligence
+
+**Explain / Live Explain architecture (all product paths):** do **not** assemble or ship AST/LSP context packs. Use a slim pointer (file/line/symbol) and/or a bounded source window; the generative model (Agent or API key) writes the narrative.
 
 Each operation should expose:
 

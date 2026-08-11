@@ -456,43 +456,6 @@ function detectStatementBlock(lines: string[], lineNumber: number): { startLine:
   };
 }
 
-function fieldMembers(symbol: PythonSymbol): PythonAstMember[] {
-  return symbol.members.filter((member) => member.kind === "field");
-}
-
-function methodMembers(symbol: PythonSymbol): PythonAstMember[] {
-  return symbol.members.filter((member) => member.kind === "method");
-}
-
-function validatorMethods(symbol: PythonSymbol): PythonAstMember[] {
-  return methodMembers(symbol).filter((member) =>
-    (member.decorators ?? []).some((decorator) =>
-      /field_validator|model_validator|validator|root_validator|field_serializer|model_serializer/.test(decorator)
-    )
-  );
-}
-
-function formatMethod(member: PythonAstMember): string {
-  const decorators = (member.decorators ?? []).length > 0 ? `@${(member.decorators ?? []).join(", @")} ` : "";
-  return `${decorators}${member.name}()`;
-}
-
-function excerptFocusLine(excerpt: string | undefined, symbolHint?: string): string {
-  if (!excerpt) {
-    return "";
-  }
-
-  const lines = excerpt.split("\n");
-  if (symbolHint) {
-    const hit = lines.find((line) => line.includes(symbolHint));
-    if (hit) {
-      return hit.trim();
-    }
-  }
-
-  return (lines[Math.floor(lines.length / 2)] ?? lines[0] ?? "").trim();
-}
-
 function truncateBlock(text: string, maxChars: number): string {
   const trimmed = text.trim();
   if (trimmed.length <= maxChars) {
@@ -501,57 +464,20 @@ function truncateBlock(text: string, maxChars: number): string {
   return `${trimmed.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
 }
 
-/** Compact symbol structure for tools / enrichment — not a user-facing narrative. */
-function buildAstFactBlock(primary: PythonSymbol | undefined): string {
-  if (!primary) {
-    return "structure: unresolved";
-  }
-
-  const lines = [
-    `symbol: ${primary.name}`,
-    `kind: ${primary.kind}`,
-    `span: ${primary.file}:${primary.line}-${primary.endLine}`,
-    `bases: ${primary.bases.join(", ") || "(none)"}`,
-    `decorators: ${primary.decorators.join(", ") || "(none)"}`,
-    `docstring: ${truncateBlock(primary.docstring || "(none)", 240)}`
-  ];
-
-  const fields = fieldMembers(primary);
-  if (fields.length > 0) {
-    lines.push("fields:");
-    for (const field of fields.slice(0, 16)) {
-      lines.push(
-        `- ${field.name}${field.annotation ? `: ${field.annotation}` : ""}${field.value ? ` = ${truncateBlock(field.value, 80)}` : ""}`
-      );
-    }
-  }
-
-  const validators = validatorMethods(primary);
-  if (validators.length > 0) {
-    lines.push("validators:");
-    for (const method of validators.slice(0, 10)) {
-      lines.push(`- ${formatMethod(method)}`);
-    }
-  }
-
-  const methods = methodMembers(primary).filter(
-    (member) => !validators.some((validator) => validator.name === member.name)
-  );
-  if (methods.length > 0) {
-    lines.push("methods:");
-    for (const method of methods.slice(0, 10)) {
-      lines.push(`- ${formatMethod(method)}`);
-    }
-  }
-
-  lines.push("definition_excerpt:");
-  lines.push(truncateBlock(primary.excerpt, 400));
-  return lines.join("\n");
+function buildNearbySourceWindow(lines: string[], lineNumber: number, radius = 12): string {
+  const index = Math.max(0, lineNumber - 1);
+  const start = Math.max(0, index - radius);
+  const end = Math.min(lines.length, index + radius + 1);
+  return lines
+    .slice(start, end)
+    .map((line, offset) => `${start + offset + 1}| ${line}`)
+    .join("\n");
 }
 
 /**
  * Deterministic layer is context-only.
  * Narrative tutoring fields stay empty so LLM/Agent must produce the final explanation.
+ * No AST/LSP structure dumps — only a short source window + file:line locations.
  */
 function buildExplanation(
   file: string,
@@ -560,7 +486,7 @@ function buildExplanation(
   primary: PythonSymbol | undefined,
   definitions: SourceReference[],
   references: SourceReference[],
-  _containingScopes: PythonSymbol[]
+  sourceLines: string[]
 ): Explanation {
   const shortName = symbolName ?? primary?.name;
   const definitionText = definitions[0] ? `${definitions[0].file}:${definitions[0].line}` : `${file}:${line}`;
@@ -568,19 +494,29 @@ function buildExplanation(
   return {
     summary: shortName ? `${shortName} @ ${definitionText}` : `${file}:${line}`,
     whatItDoes: "",
-    howItWorks: buildAstFactBlock(primary),
+    howItWorks: buildNearbySourceWindow(sourceLines, primary?.line ?? line),
     whyItExists: "",
     codebaseUsage: references
       .slice(0, 12)
-      .map((reference) => {
-        const focus = excerptFocusLine(reference.excerpt, shortName);
-        return `- [${reference.kind ?? "mention"}] ${reference.file}:${reference.line}${focus ? `\n  ${focus}` : ""}`;
-      })
+      .map((reference) => `- ${reference.file}:${reference.line}`)
       .join("\n"),
     caveats: [],
     confidence: primary || definitions.length > 0 ? (references.length > 0 ? "high" : "medium") : "low",
-    sources: dedupeReferences([...definitions, ...references]).slice(0, 12),
-    relatedCode: references.slice(0, 8),
+    sources: dedupeReferences([...definitions, ...references])
+      .slice(0, 12)
+      .map((item) => ({
+        file: item.file,
+        line: item.line,
+        kind: item.kind,
+        score: item.score,
+        excerpt: item.excerpt ? truncateBlock(item.excerpt, 120) : undefined
+      })),
+    relatedCode: references.slice(0, 8).map((item) => ({
+      file: item.file,
+      line: item.line,
+      kind: item.kind,
+      score: item.score
+    })),
     inferredClaims: []
   };
 }
@@ -678,8 +614,8 @@ async function analyzeSelection(request: ExplainSelectionRequest): Promise<Selec
 
   const resolvedDefinition = Boolean(primaryDefinition) || definitionSymbols.length > 0;
   const metadata: ResolutionMetadata = {
-    source: languageFromFile(file) === "python" && workspaceAnalysis.usedAst ? "ast" : "text",
-    capabilityTier: languageFromFile(file) === "python" ? 2 : 0,
+    source: "text",
+    capabilityTier: 1,
     confidence: effectiveSymbol
       ? resolvedDefinition
         ? references.length > 0
@@ -808,7 +744,7 @@ export async function buildSelectionContext(request: ExplainSelectionRequest): P
     analysis.primaryDefinition,
     analysis.definitions,
     analysis.references,
-    analysis.containingScopes
+    analysis.lines
   );
 
   return {

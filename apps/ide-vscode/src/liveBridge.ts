@@ -61,13 +61,13 @@ function appendWake(dir: string, state: LiveCursorState): void {
 
 function writePendingPrompt(dir: string, state: LiveCursorState): void {
   ensureDir(dir);
-  // Slim pointer only — Agent pulls AST/LSP facts via Codegraph tools (token-efficient).
+  // Slim pointer only — Agent reads source (no AST/LSP dumps).
   const prompt = [
-    "codegraph-slim-v2",
+    "codegraph-slim-v3",
     "Use the Codegraph skill / MCP tools.",
     "Codegraph Live Explain — answer in this Agent chat.",
     "Do not ask for API keys.",
-    "Do NOT paste or wait for large code dumps; fetch with tools.",
+    "Do NOT use AST/LSP dumps. Read the source yourself.",
     "",
     "TARGET:",
     `rootPath: ${state.rootPath}`,
@@ -75,13 +75,12 @@ function writePendingPrompt(dir: string, state: LiveCursorState): void {
     `line: ${state.line}`,
     `symbol: ${state.selection || "(cursor only)"}`,
     "",
-    "REQUIRED TOOL FLOW (pull data yourself):",
-    "1) Call Codegraph `explain_selection` with enrich omitted/false.",
-    "2) If needed, call `find_definition` and/or `find_usages`.",
-    "3) Optionally `logical_section` for surrounding class/function.",
-    "4) Only after tools return, write the tutoring answer.",
+    "REQUIRED FLOW:",
+    "1) Open/read `filePath` around `line` (or call Codegraph `logical_section`).",
+    "2) Explain from that source. Optionally call `find_definition` / `find_usages` for file:line locations only.",
+    "3) Do not request or rely on AST/LSP context blobs.",
     "",
-    "Rules: cite only tool file:line sources; never invent files/symbols; keep it concise."
+    "Rules: cite real file:line; never invent files/symbols; keep it concise."
   ].join("\n");
   fs.writeFileSync(path.join(dir, "pending-prompt.md"), `${prompt}\n`, "utf8");
 }

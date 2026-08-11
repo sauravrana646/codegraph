@@ -97,5 +97,6 @@ Base: `http://127.0.0.1:4311`
 
 ## Language expectations
 
-- Gold path: Python (`.py`) with AST-backed parsing when `python3` is available
+- Gold path: Python (`.py`)
+- Tools return bounded source windows and `file:line` locations — not AST/LSP context packs
 - Other languages: weaker / experimental; say so when confidence is low

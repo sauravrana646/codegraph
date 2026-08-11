@@ -29,9 +29,9 @@ cursor --install-extension ./artifacts/codegraph-extension.vsix
 
 Turn Live ON once, then **only move your cursor** — no typing, no Enter.
 
-**Agent mode (default):** AST/LSP context is auto-sent to Cursor Agent chat and submitted. The answer appears in Agent. On macOS, allow **Accessibility** for Cursor the first time (System Settings → Privacy & Security → Accessibility).
+**Agent mode (default):** a slim pointer (`codegraph-slim-v3`) is auto-sent to Cursor Agent chat. Agent reads the source and explains. On macOS, allow **Accessibility** for Cursor the first time (System Settings → Privacy & Security → Accessibility).
 
-**API key mode:** AST/LSP context is enriched in the Codegraph panel.
+**API key mode:** a short source window is enriched in the Codegraph panel (no AST/LSP context packs).
 
 Settings:
 

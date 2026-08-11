@@ -2,7 +2,7 @@
 # Codegraph live tutoring watcher (learn-codebase compatible).
 #
 # Watches ~/.cursor/codegraph/wake.log (and can point at learn-codebase) and wakes
-# Cursor Agent with grounded explain context when Live Explain is ON.
+# Cursor Agent with a slim pointer when Live Explain is ON.
 #
 # Usage:
 #   skills/codegraph/scripts/watch-cursor.sh
@@ -65,22 +65,21 @@ import json, os, pathlib
 state = json.loads(pathlib.Path(os.environ["STATE_FILE"]).read_text())
 symbol = state.get("selection") or state.get("selectedText") or "(cursor only)"
 print(
-    "codegraph-slim-v2\n"
+    "codegraph-slim-v3\n"
     "Use the Codegraph skill / MCP tools.\n"
     "Codegraph Live Explain — answer in this Agent chat.\n"
     "Do not ask for API keys.\n"
-    "Do NOT paste or wait for large code dumps; fetch with tools.\n\n"
+    "Do NOT use AST/LSP dumps. Read the source yourself.\n\n"
     "TARGET:\n"
     f"rootPath: {state.get('rootPath', '')}\n"
     f"filePath: {state.get('filePath') or state.get('path', '')}\n"
     f"line: {state.get('line', 1)}\n"
     f"symbol: {symbol}\n\n"
-    "REQUIRED TOOL FLOW (pull data yourself):\n"
-    "1) Call Codegraph explain_selection with enrich omitted/false.\n"
-    "2) If needed, call find_definition and/or find_usages.\n"
-    "3) Optionally logical_section for surrounding class/function.\n"
-    "4) Only after tools return, write the tutoring answer.\n\n"
-    "Cite only tool file:line sources; never invent files/symbols; keep it concise.\n"
+    "REQUIRED FLOW:\n"
+    "1) Open/read filePath around line (or call Codegraph logical_section).\n"
+    "2) Explain from that source. Optionally find_definition / find_usages for file:line only.\n"
+    "3) Do not request or rely on AST/LSP context blobs.\n\n"
+    "Cite real file:line; never invent files/symbols; keep it concise.\n"
 )
 PY
 }

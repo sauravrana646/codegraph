@@ -17,11 +17,11 @@ import { redactSecrets } from "@codegraph/security";
 import { normalizeWorkspacePath } from "@codegraph/workspace";
 
 import { captureEditorState, setLiveBridgeEnabled } from "./liveBridge";
-import { gatherIdeLspContext, type LspGatherResult } from "./lspGather";
 import { autoSendToCursorAgent } from "./agentHandoff";
 
 type SelectionContext = Awaited<ReturnType<typeof buildSelectionContext>>;
 type EnrichedSelectionContext = GatewayEnrichedSelectionContext;
+type SourceLike = { file: string; line: number; excerpt?: string; kind?: string; score?: number };
 
 interface CodeUnderstandingSession {
   request: {
@@ -32,8 +32,6 @@ interface CodeUnderstandingSession {
   };
   result: EnrichedSelectionContext;
 }
-
-type SourceLike = { file: string; line: number; excerpt?: string };
 
 let outputChannel: vscode.OutputChannel | undefined;
 let panel: vscode.WebviewPanel | undefined;
@@ -599,7 +597,6 @@ async function enrichViaApiKey(deterministic: SelectionContext): Promise<Enriche
 
 async function enrichViaAgent(
   request: { rootPath: string; filePath: string; line: number; selectedText?: string },
-  grounded: SelectionContext,
   options?: { handOff?: boolean; forceNewChat?: boolean }
 ): Promise<EnrichedSelectionContext> {
   const prompt = buildPointerAgentHandoffPrompt(request);
@@ -614,7 +611,7 @@ async function enrichViaAgent(
         });
 
   return {
-    ...grounded,
+    ...pointerContext(request),
     enrichment: {
       used: handedOff,
       provider: "cursor-agent",
@@ -637,8 +634,10 @@ async function handOffToCursorAgent(
     logCodegraph("Refusing handoff: prompt missing slim marker", true);
     return false;
   }
-  if (prompt.includes("AST facts") || prompt.includes("AST symbol") || prompt.includes("Deterministic Codegraph facts")) {
-    logCodegraph("Refusing handoff: prompt still contains AST dump markers", true);
+  if (
+    /AST facts|AST symbol|AST_FACTS|LSP hover|Deterministic Codegraph facts/i.test(prompt)
+  ) {
+    logCodegraph("Refusing handoff: prompt still contains AST/LSP dump markers", true);
     return false;
   }
 
@@ -652,84 +651,62 @@ async function handOffToCursorAgent(
   return ok;
 }
 
-function dedupeSourceLike(items: SourceLike[]): SourceLike[] {
-  const seen = new Set<string>();
-  return items.filter((item) => {
-    const key = `${item.file}:${item.line}`;
-    if (seen.has(key)) {
-      return false;
-    }
-    seen.add(key);
-    return true;
-  });
-}
-
-function mergeLspContext(result: SelectionContext, lsp: LspGatherResult): SelectionContext {
-  const lspDefinitions = lsp.definitions.map((item) => ({
-    file: item.file,
-    line: item.line,
-    excerpt: item.excerpt,
-    kind: "definition" as const,
-    score: 110
-  }));
-  const lspReferences = lsp.references.map((item) => ({
-    file: item.file,
-    line: item.line,
-    excerpt: item.excerpt,
-    kind: "mention" as const,
-    score: 70
-  }));
-
-  const definitions = dedupeSourceLike([...lspDefinitions, ...result.context.definitions]);
-  const references = dedupeSourceLike([...lspReferences, ...result.context.references]).filter(
-    (reference) => !definitions.some((definition) => definition.file === reference.file && definition.line === reference.line)
-  );
-  const sources = dedupeSourceLike([...definitions, ...references]).slice(0, 12);
-  const hoverBlock = lsp.hoverText ? `\n\nLSP hover:\n${lsp.hoverText}` : "";
-
+/** Minimal session envelope — no AST/LSP payloads. */
+function pointerContext(request: {
+  rootPath: string;
+  filePath: string;
+  line: number;
+  selectedText?: string;
+}): SelectionContext {
+  const workspace = {
+    id: request.rootPath,
+    rootPath: request.rootPath,
+    name: path.basename(request.rootPath) || "workspace"
+  };
+  const target = {
+    workspaceId: workspace.id,
+    file: request.filePath,
+    line: request.line,
+    selectedText: request.selectedText
+  };
   return {
-    ...result,
+    workspace,
     context: {
-      ...result.context,
-      definitions,
-      references,
-      relatedFiles: references
+      workspace,
+      target,
+      definitions: [],
+      references: [],
+      relatedFiles: [],
+      documentation: [],
+      configuration: []
     },
     metadata: {
-      ...result.metadata,
-      source: lsp.used ? "ide_lsp" : result.metadata.source,
-      capabilityTier: lsp.used ? 3 : result.metadata.capabilityTier,
-      confidence: Math.max(result.metadata.confidence, lsp.used ? 0.9 : 0)
+      source: "text",
+      capabilityTier: 1,
+      confidence: 0.5
     },
     explanation: {
-      ...result.explanation,
-      howItWorks: `${result.explanation.howItWorks || ""}${hoverBlock}`.trim(),
-      codebaseUsage: [
-        result.explanation.codebaseUsage,
-        ...lspReferences.slice(0, 8).map((item) => `- [lsp] ${item.file}:${item.line}`)
-      ]
-        .filter(Boolean)
-        .join("\n"),
-      sources,
-      relatedCode: references.slice(0, 8),
-      // Keep narrative empty until model enrichment.
+      summary: request.selectedText
+        ? `${request.selectedText} @ ${request.filePath}:${request.line}`
+        : `${request.filePath}:${request.line}`,
       whatItDoes: "",
-      whyItExists: ""
+      howItWorks: "",
+      whyItExists: "",
+      codebaseUsage: "",
+      caveats: [],
+      confidence: "low",
+      sources: [],
+      relatedCode: [],
+      inferredClaims: []
     }
   };
 }
 
-async function gatherGroundedContext(
+/** Source-window context for API key enrichment only (no IDE LSP). */
+async function gatherSourceWindowContext(
   request: { rootPath: string; filePath: string; line: number; selectedText?: string }
 ): Promise<SelectionContext> {
-  const astContext = await buildSelectionContext(request);
-  const editor = vscode.window.activeTextEditor;
-  if (!editor) {
-    return astContext;
-  }
-
-  const lsp = await gatherIdeLspContext(editor, request.rootPath);
-  return mergeLspContext(astContext, lsp);
+  return buildSelectionContext(request);
 }
 
 async function enrichGroundedContext(
@@ -747,10 +724,9 @@ async function enrichGroundedContext(
     const now = Date.now();
     const autoSubmit =
       vscode.workspace.getConfiguration("codegraph.liveExplain").get<boolean>("autoSubmitAgent") !== false;
-    const minGapMs = options?.live ? 4500 : 0;
-    if (options?.live && now - lastAgentHandOffMs < minGapMs) {
+    if (options?.live && now - lastAgentHandOffMs < 4500) {
       return {
-        ...grounded,
+        ...pointerContext(request),
         enrichment: {
           used: false,
           provider: "cursor-agent",
@@ -765,17 +741,17 @@ async function enrichGroundedContext(
       lastAgentHandOffMs = now;
     }
 
-    return enrichViaAgent(request, grounded, {
+    return enrichViaAgent(request, {
       handOff: shouldHandOff,
       forceNewChat: !agentChatOpened
     });
   }
 
   return {
-    ...grounded,
+    ...pointerContext(request),
     enrichment: {
       used: false,
-      error: "Enable Built-in Agent or API Key Provider — AST/LSP context alone is not the final explanation."
+      error: "Enable Built-in Agent or API Key Provider — pointer alone is not the final explanation."
     }
   };
 }
@@ -792,11 +768,10 @@ async function runAskCursorAgent(
     return;
   }
 
-  const grounded = await gatherGroundedContext(request);
   currentSession = {
     request,
     result: {
-      ...grounded,
+      ...pointerContext(request),
       enrichment: {
         used: false,
         provider: "cursor-agent",
@@ -805,9 +780,9 @@ async function runAskCursorAgent(
     }
   };
 
-  // Agent mode: answer appears only in Agent chat — no side panel.
   lastAgentHandOffMs = Date.now();
-  await enrichViaAgent(request, grounded, { handOff: true, forceNewChat: true });
+  const result = await enrichViaAgent(request, { handOff: true, forceNewChat: true });
+  currentSession = { request, result };
 }
 
 async function runExplainSelection(
@@ -820,30 +795,15 @@ async function runExplainSelection(
   const generation = liveExplainGeneration;
   const agentMode = access.useBuiltInAgent && !access.useApiKeyProvider;
 
-  // 1) AST + LSP gather grounded context only.
-  const grounded = await gatherGroundedContext(request);
-
-  const bridgePayload = {
-    summary: grounded.explanation.summary,
-    whatItDoes: "",
-    whyItExists: "",
-    howItWorks: "",
-    codebaseUsage: "",
-    sources: (grounded.explanation.sources ?? [])
-      .slice(0, 3)
-      .map((source) => `${source.file}:${source.line}`)
-  };
-
   const editor = vscode.window.activeTextEditor;
   if (live && editor) {
-    captureEditorState(editor, request, bridgePayload);
+    captureEditorState(editor, request);
   }
 
-  // 2) Agent mode → Agent chat only (no persistent Codegraph panel).
-  //    API key mode → enrich in-panel.
+  // Agent mode: pointer only — no AST/LSP gather.
   if (agentMode) {
     logCodegraph(`Agent mode explain for ${request.filePath}:${request.line} (live=${live})`, true);
-    const result = await enrichGroundedContext(request, grounded, {
+    const result = await enrichGroundedContext(request, pointerContext(request), {
       live,
       handOffAgent: options?.handOffAgent ?? true
     });
@@ -863,12 +823,14 @@ async function runExplainSelection(
     return;
   }
 
+  // API key mode: source window only (no IDE LSP), then HTTP enrichment.
+  const grounded = await gatherSourceWindowContext(request);
   const pending: EnrichedSelectionContext = {
     ...grounded,
     enrichment: {
       used: false,
       provider: "openai-compatible",
-      error: "AST/LSP context ready — enriching via API key…"
+      error: "Source window ready — enriching via API key…"
     }
   };
 
@@ -1176,7 +1138,7 @@ function renderExplanationHtml(
       <p class="continue">${escapeHtml(continueText ?? "Ask about that, or keep moving.")}</p>
     `
     : `
-      <p class="pending">Gathered AST/LSP context. Waiting for ${
+      <p class="pending">Source window ready. Waiting for ${
         result.enrichment?.provider === "openai-compatible" ? "API enrichment" : "Agent enrichment"
       } — that model writes the final tutoring explanation.</p>
       <p class="muted">${escapeHtml(result.enrichment?.error || "")}</p>
