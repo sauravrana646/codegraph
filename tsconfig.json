@@ -1,0 +1,11 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/protocol" },
+    { "path": "./packages/workspace" },
+    { "path": "./packages/security" },
+    { "path": "./packages/core" },
+    { "path": "./apps/runtime" },
+    { "path": "./apps/ide-vscode" }
+  ]
+}

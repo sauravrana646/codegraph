@@ -1,0 +1,38 @@
+{
+  "name": "codegraph-ide-vscode",
+  "displayName": "Codegraph",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Python-first codebase intelligence extension for VS Code and Cursor.",
+  "license": "MIT",
+  "type": "commonjs",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:codegraph.explainSelection"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "codegraph.explainSelection",
+        "title": "Codegraph: Explain Selection"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@codegraph/core": "0.1.0"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.105.0"
+  }
+}
