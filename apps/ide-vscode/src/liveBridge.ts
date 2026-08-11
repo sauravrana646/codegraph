@@ -59,8 +59,34 @@ function appendWake(dir: string, state: LiveCursorState): void {
   fs.appendFileSync(path.join(dir, "wake.log"), `${line}\n`, "utf8");
 }
 
-function writePendingPrompt(dir: string, state: LiveCursorState): void {
+function writePendingPrompt(
+  dir: string,
+  state: LiveCursorState,
+  grounded?: {
+    summary?: string;
+    whatItDoes?: string;
+    whyItExists?: string;
+    howItWorks?: string;
+    codebaseUsage?: string;
+    sources?: string[];
+  }
+): void {
   ensureDir(dir);
+  const groundedBlock = grounded
+    ? [
+        "",
+        "Deterministic Codegraph facts (use these; do not invent sources):",
+        `Summary: ${grounded.summary ?? "(none)"}`,
+        `What it does: ${grounded.whatItDoes ?? "(none)"}`,
+        `Purpose / use: ${grounded.whyItExists ?? "(none)"}`,
+        `How it works: ${grounded.howItWorks ?? "(none)"}`,
+        `Codebase usage: ${grounded.codebaseUsage ?? "(none)"}`,
+        "Sources:",
+        ...(grounded.sources ?? []).map((source) => `- ${source}`),
+        ""
+      ]
+    : [""];
+
   const prompt = [
     "Use the Codegraph skill (or learn-codebase tutoring style).",
     "Live cursor moved — explain this location interactively.",
@@ -73,9 +99,15 @@ function writePendingPrompt(dir: string, state: LiveCursorState): void {
     `column: ${state.column}`,
     `selection: ${state.selection || "(cursor only)"}`,
     `languageId: ${state.languageId}`,
-    "",
-    "1. Call Codegraph `explain_selection` (enrich omitted/false) for deterministic facts/sources.",
-    "2. Enrich + explain in tutoring style: what it is, what it does, how it fits, cite file:line only from tools.",
+    ...groundedBlock,
+    "1. If facts above are missing/weak, call Codegraph `explain_selection` (enrich omitted/false).",
+    "2. Respond with ALL of these sections filled usefully:",
+    "   - Summary",
+    "   - What it does",
+    "   - Purpose / what it is used for",
+    "   - How it works",
+    "   - In this codebase (usages)",
+    "   - Cited sources (file:line only from tools/facts)",
     "3. Keep the answer concise unless the symbol is complex."
   ].join("\n");
   fs.writeFileSync(path.join(dir, "pending-prompt.md"), `${prompt}\n`, "utf8");
@@ -124,6 +156,14 @@ export function publishLiveCursorState(input: {
   column: number;
   selectedText?: string;
   languageId: string;
+  grounded?: {
+    summary?: string;
+    whatItDoes?: string;
+    whyItExists?: string;
+    howItWorks?: string;
+    codebaseUsage?: string;
+    sources?: string[];
+  };
 }): LiveCursorState | undefined {
   const { writeBridge, compatLearnCodebase } = liveBridgeConfig();
   if (!writeBridge) {
@@ -154,7 +194,7 @@ export function publishLiveCursorState(input: {
     for (const dir of dirs) {
       writeState(dir, state);
       appendWake(dir, state);
-      writePendingPrompt(dir, state);
+      writePendingPrompt(dir, state, input.grounded);
     }
 
     return state;
@@ -166,7 +206,15 @@ export function publishLiveCursorState(input: {
 
 export function captureEditorState(
   editor: vscode.TextEditor,
-  request: { rootPath: string; filePath: string; line: number; selectedText?: string }
+  request: { rootPath: string; filePath: string; line: number; selectedText?: string },
+  grounded?: {
+    summary?: string;
+    whatItDoes?: string;
+    whyItExists?: string;
+    howItWorks?: string;
+    codebaseUsage?: string;
+    sources?: string[];
+  }
 ): void {
   publishLiveCursorState({
     rootPath: request.rootPath,
@@ -175,6 +223,7 @@ export function captureEditorState(
     line: request.line,
     column: editor.selection.active.character,
     selectedText: request.selectedText,
-    languageId: editor.document.languageId
+    languageId: editor.document.languageId,
+    grounded
   });
 }

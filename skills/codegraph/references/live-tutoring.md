@@ -65,12 +65,25 @@ Settings:
 
 When woken for a live cursor move:
 
-1. Read `~/.cursor/codegraph/state.json` (or the learn-codebase mirror).
-2. Call `explain_selection` with `enrich` omitted/false.
-3. Enrich + explain in tutoring style from the tool envelope.
-4. Cite only returned `file:line` sources.
-5. Do **not** ask for API keys.
-6. Keep answers tight unless the user asks to go deeper.
+1. Read `~/.cursor/codegraph/state.json` / `pending-prompt.md` (or the learn-codebase mirror).
+2. Prefer the grounded facts already in `pending-prompt.md`; otherwise call `explain_selection` with `enrich` omitted/false.
+3. Respond with **all** sections filled usefully:
+   - Summary
+   - What it does
+   - Purpose / what it is used for
+   - How it works
+   - In this codebase (usages)
+   - Cited sources (`file:line` only from tools/facts)
+4. Do **not** ask for API keys.
+5. Keep answers tight unless the user asks to go deeper.
+
+## API key mode (same sections)
+
+When Live Explain is on with **API key provider**:
+
+1. Panel shows deterministic sections immediately.
+2. Extension enriches the same sections in-panel via the OpenAI-compatible provider.
+3. No Agent watcher required for narrative quality — both modes target the same section set.
 
 ## What each piece owns
 

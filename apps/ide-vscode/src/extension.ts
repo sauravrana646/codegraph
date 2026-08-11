@@ -147,8 +147,8 @@ function scheduleLiveExplain(): void {
       return;
     }
 
-    // learn-codebase-compatible agent bridge: state.json + wake.log (+ pending-prompt.md)
-    captureEditorState(editor, request);
+    // learn-codebase-compatible agent bridge is refreshed inside runExplainSelection
+    // after deterministic facts are ready (so pending-prompt includes all sections).
     void runExplainSelection(extensionContext, request, { live: true, handOffAgent: false });
   }, debounceMs);
 }
@@ -383,10 +383,15 @@ function enrichmentStatusLabel(enrichment?: EnrichmentMetadata): string {
 
   if (
     enrichment.error?.includes("Live Explain") ||
-    enrichment.error?.includes("deterministic facts") ||
+    enrichment.error?.includes("deterministic") ||
+    enrichment.error?.includes("agent bridge") ||
     enrichment.error?.includes("on-demand")
   ) {
-    return "deterministic";
+    return enrichment.error.includes("Enriching") ? "enriching" : "deterministic";
+  }
+
+  if (enrichment.error?.includes("Enriching narrative")) {
+    return "enriching";
   }
 
   if (enrichment.error?.includes("handed off") || enrichment.error?.includes("agent")) {
@@ -620,29 +625,101 @@ async function runExplainSelection(
   options?: { live?: boolean; handOffAgent?: boolean }
 ): Promise<void> {
   const live = Boolean(options?.live);
+  const access = modelAccessConfig();
+  const generation = liveExplainGeneration;
   const deterministic = await buildSelectionContext(request);
-  const result = await maybeEnrichSelection(deterministic, {
-    live,
-    handOffAgent: live ? false : options?.handOffAgent
-  });
+
+  const grounded = {
+    summary: deterministic.explanation.summary,
+    whatItDoes: deterministic.explanation.whatItDoes,
+    whyItExists: deterministic.explanation.whyItExists,
+    howItWorks: deterministic.explanation.howItWorks,
+    codebaseUsage: deterministic.explanation.codebaseUsage,
+    sources: (deterministic.explanation.sources ?? []).map(
+      (source) => `${source.file}:${source.line}`
+    )
+  };
+
+  // Refresh agent bridge with grounded facts so BOTH agent and API-key paths
+  // share the same section-complete context.
+  const editor = vscode.window.activeTextEditor;
+  if (live && editor) {
+    captureEditorState(editor, request, grounded);
+  }
+
+  const pendingEnrichment: EnrichedSelectionContext = {
+    ...deterministic,
+    enrichment: {
+      used: false,
+      provider: access.useApiKeyProvider ? "openai-compatible" : access.useBuiltInAgent ? "cursor-agent" : undefined,
+      error: access.useApiKeyProvider
+        ? "Enriching narrative sections via API key provider…"
+        : access.useBuiltInAgent
+          ? "Deterministic sections ready. Agent bridge updated for live tutoring (all sections required)."
+          : "Deterministic sections only."
+    }
+  };
+
+  // Show deterministic panel immediately (all structural sections already filled).
+  currentSession = { request, result: pendingEnrichment };
+  renderExplainPanel(context, request, pendingEnrichment, { live, announce: false });
+
+  // API key path: enrich in-panel for BOTH live and one-shot explains.
+  // Agent path: live stays in-panel + bridge; one-shot may hand off.
+  let result: EnrichedSelectionContext;
+  if (access.useApiKeyProvider) {
+    result = await enrichViaApiKey(deterministic);
+  } else if (live) {
+    result = {
+      ...deterministic,
+      enrichment: {
+        used: false,
+        provider: "cursor-agent",
+        error:
+          "Live Explain: panel shows full deterministic sections; agent bridge/pending-prompt asks Agent for the same sections (purpose/use, what it does, how, usages)."
+      }
+    };
+  } else {
+    result = await maybeEnrichSelection(deterministic, {
+      live: false,
+      handOffAgent: options?.handOffAgent
+    });
+  }
+
+  if (live && generation !== liveExplainGeneration) {
+    return;
+  }
 
   currentSession = { request, result };
+  renderExplainPanel(context, request, result, {
+    live,
+    announce: !live
+  });
+}
 
+function renderExplainPanel(
+  context: vscode.ExtensionContext,
+  request: { rootPath: string; filePath: string; line: number; selectedText?: string },
+  result: EnrichedSelectionContext,
+  options: { live: boolean; announce: boolean }
+): void {
   const channel = getOutputChannel();
-  if (!live) {
+  if (!options.live) {
     channel.clear();
   }
-  channel.appendLine(live ? "Codegraph live explain" : "Codegraph selection context");
+  channel.appendLine(options.live ? "Codegraph live explain" : "Codegraph selection context");
   channel.appendLine(
     redactSecrets(
       JSON.stringify(
         {
-          live,
+          live: options.live,
           target: `${request.filePath}:${request.line}`,
           metadata: result.metadata,
           enrichment: result.enrichment,
           explanation: {
             summary: result.explanation.summary,
+            whatItDoes: result.explanation.whatItDoes,
+            whyItExists: result.explanation.whyItExists,
             confidence: result.explanation.confidence,
             sources: result.explanation.sources
           }
@@ -663,12 +740,11 @@ async function runExplainSelection(
   const label = request.selectedText
     ? request.selectedText.slice(0, 48)
     : `${request.filePath}:${request.line}`;
-  panel.title = live ? `Codegraph Live: ${label}` : `Codegraph: ${label}`;
+  panel.title = options.live ? `Codegraph Live: ${label}` : `Codegraph: ${label}`;
   panel.webview.html = renderExplanationHtml(request.filePath, request.line, result);
-  // Keep editor focus during live updates so navigation stays interactive.
   panel.reveal(vscode.ViewColumn.Beside, true);
 
-  if (!live) {
+  if (options.announce) {
     const enrichmentLabel = enrichmentStatusLabel(result.enrichment);
     const summaryText = request.selectedText
       ? `Prepared local context for "${request.selectedText}" (tier ${result.metadata.capabilityTier}, enrichment ${enrichmentLabel}).`
@@ -840,11 +916,13 @@ function renderExplanationHtml(
   const liveLabel = liveExplainEnabled ? "Live ON" : "Live OFF";
   const modeNote = access.useApiKeyProvider
     ? access.apiKey
-      ? "API key mode: enrichment runs through your OpenAI-compatible provider."
+      ? liveExplainEnabled
+        ? "API key mode + Live Explain: panel shows deterministic sections immediately, then enriches Summary / What it does / Purpose / How / Usages via your provider."
+        : "API key mode: enrichment fills Summary, What it does, Purpose/use, How it works, and Codebase usage via your OpenAI-compatible provider."
       : "API key mode is on, but no API key is configured yet."
     : access.useBuiltInAgent
       ? liveExplainEnabled
-        ? "Live Explain is on: panel updates as you move. Agent bridge writes ~/.cursor/codegraph (learn-codebase compatible). Run watch-cursor.sh for live Agent tutoring."
+        ? "Agent mode + Live Explain: panel shows full deterministic sections; bridge/pending-prompt asks Agent for the same sections (purpose/use, what it does, how, usages)."
         : "Agent mode: enrichment + explanation run through Cursor/Claude agent when you ask (subscription, no API key)."
       : "Model access disabled.";
 
@@ -988,13 +1066,13 @@ function renderExplanationHtml(
       </section>
 
       <section>
-        <h2>How it works</h2>
-        <pre>${escapeHtml(result.explanation.howItWorks)}</pre>
+        <h2>Purpose / what it is used for</h2>
+        <p>${escapeHtml(result.explanation.whyItExists)}</p>
       </section>
 
       <section>
-        <h2>Why it exists</h2>
-        <p>${escapeHtml(result.explanation.whyItExists)}</p>
+        <h2>How it works</h2>
+        <pre>${escapeHtml(result.explanation.howItWorks)}</pre>
       </section>
 
       <section>

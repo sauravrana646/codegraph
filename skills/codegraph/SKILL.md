@@ -26,7 +26,13 @@ This matches the local **learn-codebase** interaction model: toggle once, then k
 3. User says: `Start Codegraph live tutoring` (or invokes `/codegraph`).
 4. On each wake, read `~/.cursor/codegraph/state.json` (fallback `~/.cursor/learn-codebase/state.json`).
 5. Call `explain_selection` for that `rootPath` / `filePath` / `line` / `selectedText` with `enrich` omitted/false.
-6. Enrich + explain in a concise tutoring style; cite only tool `file:line` sources.
+6. Enrich + explain with **all** of these sections filled usefully:
+   - Summary
+   - What it does
+   - Purpose / what it is used for
+   - How it works
+   - In this codebase (usages)
+   - Cited sources (`file:line` only from tools)
 
 ### Cursor-move flow
 
