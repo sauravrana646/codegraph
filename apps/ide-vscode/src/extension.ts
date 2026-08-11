@@ -109,14 +109,18 @@ function updateLiveExplainStatusBar(): void {
   }
 
   liveExplainStatusBar.text = liveExplainEnabled
-    ? "$(eye) Codegraph Live: ON"
-    : "$(eye-closed) Codegraph Live: OFF";
+    ? "$(eye) CG Live: ON"
+    : "$(eye-closed) CG Live: OFF";
   liveExplainStatusBar.tooltip = liveExplainEnabled
-    ? "Live Explain ON — click to turn OFF"
-    : "Live Explain OFF — click to turn ON";
+    ? "Codegraph Live Explain ON — click to turn OFF"
+    : "Codegraph Live Explain OFF — click to turn ON";
   liveExplainStatusBar.backgroundColor = liveExplainEnabled
     ? new vscode.ThemeColor("statusBarItem.warningBackground")
     : undefined;
+  liveExplainStatusBar.accessibilityInformation = {
+    label: liveExplainEnabled ? "Codegraph Live Explain on" : "Codegraph Live Explain off",
+    role: "button"
+  };
   liveExplainStatusBar.show();
 }
 
@@ -127,8 +131,14 @@ function updateExplainDepthStatusBar(): void {
 
   const depth = explainDepthSetting();
   const label = depth === "short" ? "Short" : depth === "deep" ? "Deep" : "Standard";
-  explainDepthStatusBar.text = `$(list-flat) Depth: ${label}`;
-  explainDepthStatusBar.tooltip = `Explain depth: ${label}. Click to change (Short / Standard / Deep).`;
+  explainDepthStatusBar.text = `$(list-flat) CG Depth: ${label}`;
+  explainDepthStatusBar.tooltip =
+    `Explain depth: ${label}. Click to change (Short / Standard / Deep).\n` +
+    "Deep = use case, example, why-not-simpler alternatives, and why this design wins.";
+  explainDepthStatusBar.accessibilityInformation = {
+    label: `Codegraph explain depth ${label}`,
+    role: "button"
+  };
   explainDepthStatusBar.show();
 }
 
@@ -288,15 +298,16 @@ export function activate(context: vscode.ExtensionContext): void {
 
   logCodegraph(`Activated. parser=${process.env.CODEGRAPH_PYTHON_PARSER}`, true);
 
-  liveExplainStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  // Left + high priority so Cursor's crowded right status bar cannot hide these.
+  liveExplainStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 1000);
   liveExplainStatusBar.command = "codegraph.toggleLiveExplain";
   liveExplainStatusBar.name = "Codegraph Live Explain";
-  liveExplainStatusBar.show();
+  context.subscriptions.push(liveExplainStatusBar);
 
-  explainDepthStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
+  explainDepthStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 999);
   explainDepthStatusBar.command = "codegraph.setExplainDepth";
   explainDepthStatusBar.name = "Codegraph Explain Depth";
-  explainDepthStatusBar.show();
+  context.subscriptions.push(explainDepthStatusBar);
 
   const saved =
     context.workspaceState.get<boolean>("codegraph.liveExplain.enabled") ??
@@ -460,7 +471,11 @@ export function activate(context: vscode.ExtensionContext): void {
       [
         { label: "Short", description: "2–4 sentence purpose", depth: "short" as const },
         { label: "Standard", description: "Purpose + fields + notes", depth: "standard" as const },
-        { label: "Deep", description: "Connections, shapes, caveats", depth: "deep" as const }
+        {
+          label: "Deep",
+          description: "Use case, example, why-not-simpler, why this design wins",
+          depth: "deep" as const
+        }
       ],
       { title: "Codegraph explain depth", placeHolder: "How detailed should explanations be?" }
     );
@@ -527,8 +542,6 @@ export function activate(context: vscode.ExtensionContext): void {
     configListener,
     selectionListener,
     editorListener,
-    liveExplainStatusBar,
-    explainDepthStatusBar,
     getOutputChannel(),
     {
       dispose: () => {

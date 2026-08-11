@@ -3,6 +3,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 
+import { buildPointerAgentHandoffPrompt, type ExplainDepth } from "@codegraph/model-gateway";
+
 export interface LiveCursorState {
   path: string;
   absolutePath: string;
@@ -62,30 +64,18 @@ function appendWake(dir: string, state: LiveCursorState): void {
 function writePendingPrompt(dir: string, state: LiveCursorState): void {
   ensureDir(dir);
   // Slim pointer only — Agent reads source (no AST/LSP dumps).
+  // Must include depth answer format (especially Deep: example + why-not-simpler).
   const depthRaw =
     vscode.workspace.getConfiguration("codegraph.explain").get<string>("depth") ?? "standard";
-  const depth = depthRaw === "short" || depthRaw === "deep" ? depthRaw : "standard";
-  const prompt = [
-    "codegraph-slim-v3",
-    "Use the Codegraph skill / MCP tools.",
-    "Codegraph Live Explain — answer in this Agent chat.",
-    "Do not ask for API keys.",
-    "Do NOT use AST/LSP dumps. Read the source yourself.",
-    "",
-    "TARGET:",
-    `rootPath: ${state.rootPath}`,
-    `filePath: ${state.filePath}`,
-    `line: ${state.line}`,
-    `symbol: ${state.selection || "(cursor only)"}`,
-    `depth: ${depth}`,
-    "",
-    "REQUIRED FLOW:",
-    "1) Open/read `filePath` around `line` (or call Codegraph `logical_section`).",
-    "2) Explain from that source. Optionally call `find_definition` / `find_usages` for file:line locations only.",
-    "3) Do not request or rely on AST/LSP context blobs.",
-    "",
-    "Rules: cite real file:line; never invent files/symbols; keep it concise."
-  ].join("\n");
+  const depth: ExplainDepth =
+    depthRaw === "short" || depthRaw === "deep" ? depthRaw : "standard";
+  const prompt = buildPointerAgentHandoffPrompt({
+    rootPath: state.rootPath,
+    filePath: state.filePath,
+    line: state.line,
+    selectedText: state.selection || state.selectedText,
+    depth
+  });
   fs.writeFileSync(path.join(dir, "pending-prompt.md"), `${prompt}\n`, "utf8");
 }
 

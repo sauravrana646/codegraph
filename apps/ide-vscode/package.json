@@ -1,7 +1,7 @@
 {
   "name": "codegraph-ide-vscode",
   "displayName": "Codegraph",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "publisher": "codegraph",
   "description": "Python-first codebase intelligence extension for VS Code and Cursor.",
@@ -137,9 +137,9 @@
           "enumDescriptions": [
             "Short purpose only",
             "Purpose + fields + notes",
-            "Deep: connections, shapes, caveats"
+            "Deep: use case, concrete example, why-not-simpler alternatives, and why this design is better"
           ],
-          "markdownDescription": "How detailed Live Explain / Agent / API enrichment answers should be."
+          "markdownDescription": "How detailed Live Explain / Agent / API enrichment answers should be. Toggle from the **CG Depth** status bar item (left status bar)."
         },
         "codegraph.modelAccess.autoEnrichOnExplain": {
           "type": "boolean",

@@ -31,6 +31,12 @@ cursor --install-extension ./artifacts/codegraph-extension.vsix
 
 Turn Live ON once, then **only move your cursor** — no typing, no Enter.
 
+**Status bar (left):** `CG Live: ON/OFF` toggles Live Explain; `CG Depth: Short|Standard|Deep` sets answer depth.
+
+- **Short** — purpose only  
+- **Standard** — purpose + fields + notes  
+- **Deep** — use case, concrete example, why-not-simpler alternatives, and why this design is better
+
 **Agent mode (default):** a slim pointer (`codegraph-slim-v3`) is auto-sent to Cursor Agent chat. Agent reads the source and explains. On macOS, allow **Accessibility** for Cursor the first time (System Settings → Privacy & Security → Accessibility).
 
 **API key mode:** pick a provider (OpenRouter, OpenAI, Groq, Gemini, …); base URL is set automatically. You only enter **API key** + **model**. Enrichment shows in the Codegraph panel.
@@ -44,6 +50,7 @@ Settings:
 - `codegraph.liveExplain.pythonOnly` — only auto-explain Python editors (default on)
 - `codegraph.liveExplain.writeAgentBridge` — write `~/.cursor/codegraph/` bridge files (default on)
 - `codegraph.liveExplain.compatLearnCodebase` — also mirror to `~/.cursor/learn-codebase/` (default on)
+- `codegraph.explain.depth` — short / standard / deep
 
 ## Commands
 

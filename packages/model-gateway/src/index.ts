@@ -336,13 +336,36 @@ function buildEnrichmentPrompt(
       ? "Keep whyItExists to 2-4 sentences; whatItDoes can be a short bullet list; howItWorks one short note."
       : depth === "deep"
         ? [
-            "Deep tutoring mode:",
-            "whyItExists must cover the real use case and what problem this solves;",
-            "whatItDoes should include a concrete example (input → behavior → result) and a fields table when applicable;",
-            "howItWorks must explain why this design over simpler alternatives (what those alternatives are, why they fall short, why this way is better), plus edge cases and nearby connections;",
-            "codebaseUsage should mention realistic call sites / workflows."
+            "Deep tutoring mode (design rationale, not a syntax restatement):",
+            "whyItExists = real product/workflow use case and the problem this solves;",
+            "whatItDoes = concrete example (realistic input → what happens → result) plus fields table when applicable;",
+            "howItWorks MUST name simpler alternatives (e.g. plain dict, ad-hoc if/else, looser types), explain why those fall short here, and why THIS design is better (tradeoffs + benefits);",
+            "also cover edge cases / failure modes and nearby module connections;",
+            "codebaseUsage should mention realistic call sites / workflows.",
+            "Do not stay brief — depth beats brevity in deep mode."
           ].join(" ")
         : "Use standard tutoring depth: purpose, fields table when useful, notes, and brief usage.";
+
+  const outputMap =
+    depth === "deep"
+      ? [
+          "OUTPUT MAP (deep):",
+          "- summary: short title (symbol name)",
+          "- whyItExists: use case + problem solved (not just 'what it is')",
+          "- whatItDoes: concrete example (input → behavior → result); include | Field | Meaning | Why it exists | when applicable",
+          "- howItWorks: design rationale — simpler alternatives considered, why they are weaker, why this way is better; plus edge cases",
+          "- codebaseUsage: realistic call sites / workflows, ending with: Ask about that, or keep moving.",
+          "- caveats: real failure modes / gotchas when known"
+        ].join("\n")
+      : [
+          "OUTPUT MAP:",
+          "- summary: short title (symbol name)",
+          "- whyItExists: Purpose paragraph (what it is used for)",
+          "- whatItDoes: markdown table | Field | Meaning |",
+          "- howItWorks: docstring/validator notes + 1-2 valid shapes/examples grounded in evidence",
+          "- codebaseUsage: brief usages from references, ending with: Ask about that, or keep moving.",
+          "- caveats: [] unless necessary"
+        ].join("\n");
 
   return {
     system: [
@@ -361,13 +384,7 @@ function buildEnrichmentPrompt(
       `Depth: ${depth}. ${depthGuidance}`,
       "Do NOT dump raw parser/AST/LSP output to the user. Transform into clear tutoring prose.",
       "",
-      "OUTPUT MAP:",
-      "- summary: short title (symbol name)",
-      "- whyItExists: Purpose paragraph (what it is used for)",
-      "- whatItDoes: markdown table | Field | Meaning |",
-      "- howItWorks: docstring/validator notes + 1-2 valid shapes/examples grounded in evidence",
-      "- codebaseUsage: brief usages from references, ending with: Ask about that, or keep moving.",
-      "- caveats: [] unless necessary",
+      outputMap,
       "",
       "TARGET:",
       "<untrusted_repository_content>",
@@ -590,18 +607,20 @@ function answerFormatForDepth(depth: ExplainDepth): string[] {
     return [
       "ANSWER FORMAT (deep — teach the design, not just the syntax):",
       "1) Location + short code citation",
-      "2) Purpose — what problem this solves in the product/workflow",
-      "3) Concrete example / use case (realistic input → what happens → result)",
+      "2) Purpose / use case — what problem this solves in the product/workflow (who calls it, when)",
+      "3) Concrete example (realistic input → what happens step-by-step → result)",
       "4) Fields / API surface table when applicable (Field | Meaning | Why it exists)",
-      "5) Why this approach — what simpler alternatives exist (plain dict, ad-hoc validation, different pattern) and why they are weaker here",
-      "6) Why this way is better — tradeoffs it accepts and benefits it buys (safety, clarity, reuse, invariants)",
+      "5) Why NOT the simpler option — name 1–2 simpler alternatives people might reach for",
+      "   (plain dict, ad-hoc if/else, looser types, different pattern) and why each falls short HERE",
+      "6) Why THIS way is better — tradeoffs accepted and benefits bought (safety, clarity, reuse, invariants)",
       "7) Valid shapes / edge cases / failure modes",
       "8) How it connects to nearby modules/callers",
       "9) End with: Ask about that, or keep moving.",
       "",
       "Deep mode rules:",
       "- Prefer design rationale over restating the code line-by-line.",
-      "- Always include at least one concrete example and an explicit “why not simpler?” comparison.",
+      "- Always include at least one concrete example AND an explicit “why not simpler?” comparison.",
+      "- Depth beats brevity: do not compress into a short summary when depth=deep.",
       "- Do not invent files/APIs; ground claims in the source you read."
     ];
   }
@@ -643,7 +662,9 @@ export function buildPointerAgentHandoffPrompt(request: AgentPointerRequest): st
     "",
     ...answerFormatForDepth(depth),
     "",
-    "Rules: cite real file:line; never invent files/symbols; keep it concise."
+    depth === "deep"
+      ? "Rules: cite real file:line; never invent files/symbols; favor design depth over brevity."
+      : "Rules: cite real file:line; never invent files/symbols; keep it concise."
   ].join("\n");
 }
 
