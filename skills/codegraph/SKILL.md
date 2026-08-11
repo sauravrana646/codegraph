@@ -82,4 +82,6 @@ scripts/codegraph.sh section <rootPath> <filePath> <line> [selectedText] [depth]
 
 ## Install into an agent
 
-See [references/install.md](references/install.md) for Cursor, Claude Code, Claude Desktop, and Codex paths.
+See [references/install.md](references/install.md) for Cursor, Claude Code, Claude Desktop, and Codex.
+
+Companion IDE UI: import `artifacts/codegraph-extension.vsix` (or run `npm run package:extension`) for interactive Explain Selection in Cursor/VS Code.

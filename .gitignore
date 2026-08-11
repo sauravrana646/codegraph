@@ -17,6 +17,7 @@ artifacts
 !.agents/skills/**
 *.tsbuildinfo
 *.vsix
+apps/ide-vscode/python_symbol_parser.py
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
