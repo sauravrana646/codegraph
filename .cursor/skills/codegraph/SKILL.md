@@ -68,6 +68,15 @@ Available deterministic API endpoints:
 - `POST /v1/tools/find-definition`
 - `POST /v1/tools/find-usages`
 - `POST /v1/tools/logical-section`
+- `POST /v1/sessions/explain-selection`
+- `POST /v1/sessions/followup`
+
+Session follow-up actions:
+
+- `explain-selection`
+- `find-definition`
+- `find-usages`
+- `logical-section`
 
 ## Cursor IDE workflow
 

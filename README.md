@@ -93,6 +93,8 @@ Available endpoints:
 - `POST /v1/tools/find-definition`
 - `POST /v1/tools/find-usages`
 - `POST /v1/tools/logical-section`
+- `POST /v1/sessions/explain-selection`
+- `POST /v1/sessions/followup`
 
 All tool endpoints accept:
 
@@ -112,6 +114,33 @@ curl -X POST http://127.0.0.1:4311/v1/tools/find-definition \
   -H "content-type: application/json" \
   -d '{"rootPath":"/workspace","filePath":"examples/demo.py","line":10,"selectedText":"create"}'
 ```
+
+### Session-based follow-up API
+
+Create a short-lived session:
+
+```bash
+curl -X POST http://127.0.0.1:4311/v1/sessions/explain-selection \
+  -H "content-type: application/json" \
+  -d '{"rootPath":"/workspace","filePath":"examples/demo.py","line":10,"selectedText":"create"}'
+```
+
+Then reuse the returned `sessionId` for follow-up operations:
+
+```bash
+curl -X POST http://127.0.0.1:4311/v1/sessions/followup \
+  -H "content-type: application/json" \
+  -d '{"sessionId":"<session-id>","action":"find-usages"}'
+```
+
+Supported follow-up actions:
+
+- `explain-selection`
+- `find-definition`
+- `find-usages`
+- `logical-section`
+
+Sessions are in-memory and short-lived. They are intended for local agent or tool workflows, not durable storage.
 
 ## Run in Cursor IDE
 
