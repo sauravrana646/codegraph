@@ -32,17 +32,24 @@ Turn it on **once**, then keep coding — no Command Palette on every symbol.
 1. Click the status bar **Codegraph Live: OFF** (or run **Codegraph: Toggle Live Explain Mode** once).
 2. Open a Python file.
 3. Move the cursor or select a symbol — the side panel updates automatically with deterministic facts/sources.
-4. When you want subscription-model narrative, click **Enrich & Explain with Agent** in the panel (optional, on demand).
+4. For **Agent tutoring** (learn-codebase style), also run:
 
-Live Explain stays in-panel. It does **not** open Cursor Agent chat on every cursor move.
+   ```bash
+   skills/codegraph/scripts/watch-cursor.sh
+   ```
 
-Toggle off the same way (status bar, panel button, or Command Palette).
+   Then open Agent once and say `Start Codegraph live tutoring`. Cursor moves write `~/.cursor/codegraph/` (and mirror `~/.cursor/learn-codebase/` so your existing watcher still works).
+5. When you want a one-shot Agent narrative without the watcher, click **Enrich & Explain with Agent**.
+
+Live Explain does **not** require Command Palette per symbol. Agent wake is via the bridge + watcher (same pattern as learn-codebase).
 
 Settings:
 
 - `codegraph.liveExplain.enabled` — persisted on/off
 - `codegraph.liveExplain.debounceMs` — delay before refresh (default 450)
 - `codegraph.liveExplain.pythonOnly` — only auto-explain Python editors (default on)
+- `codegraph.liveExplain.writeAgentBridge` — write `~/.cursor/codegraph/` bridge files (default on)
+- `codegraph.liveExplain.compatLearnCodebase` — also mirror to `~/.cursor/learn-codebase/` (default on)
 
 ## Commands
 

@@ -1,11 +1,11 @@
 ---
 name: codegraph
-description: Explain and navigate Python code with source-grounded Codegraph tools. Use when understanding unfamiliar repositories, finding definitions or usages, extracting logical sections, or grounding agent answers in local code context. Works without API keys on Cursor plans.
+description: Explain and navigate Python code with source-grounded Codegraph tools. Use for live tutoring when ~/.cursor/codegraph/state.json or learn-codebase wake events appear, and when understanding unfamiliar repositories, finding definitions/usages, or grounding answers without API keys.
 license: MIT
 compatibility: Requires Node.js 20+ and a local Codegraph install (MCP preferred, CLI/HTTP fallback). Python-first; works best on .py codebases. No external model API key required when running inside Cursor Agent.
 metadata:
   author: codegraph
-  version: "0.1.1"
+  version: "0.1.2"
   homepage: https://github.com/sauravrana646/codegraph
 ---
 
@@ -14,6 +14,37 @@ metadata:
 Use Codegraph to build **bounded, source-grounded** understanding of local code before answering or editing.
 
 Prefer Codegraph over guessing from a few open files when the user asks what code does, where a symbol is defined/used, or how a section fits in the repo.
+
+## Live tutoring (start / stop / cursor-move)
+
+This matches the local **learn-codebase** interaction model: toggle once, then keep moving — Agent explains as you go.
+
+### Start
+
+1. User turns **Codegraph Live Explain** ON (status bar / toggle command).
+2. User runs `skills/codegraph/scripts/watch-cursor.sh` (or their existing learn-codebase watcher).
+3. User says: `Start Codegraph live tutoring` (or invokes `/codegraph`).
+4. On each wake, read `~/.cursor/codegraph/state.json` (fallback `~/.cursor/learn-codebase/state.json`).
+5. Call `explain_selection` for that `rootPath` / `filePath` / `line` / `selectedText` with `enrich` omitted/false.
+6. Enrich + explain in a concise tutoring style; cite only tool `file:line` sources.
+
+### Cursor-move flow
+
+When woken because the cursor moved:
+
+- Treat `state.json` as the target (not a random open file).
+- Prefer MCP/CLI Codegraph tools first; then narrate.
+- Keep answers short unless the symbol is complex or the user asks to go deeper.
+- Do not ask for API keys.
+
+### Stop
+
+When the user says stop / Live Explain turns OFF / `enabled` is missing:
+
+- Stop treating wake events as active tutoring.
+- Acknowledge that live mode is off.
+
+Details: [references/live-tutoring.md](references/live-tutoring.md).
 
 ## Cursor plan users (no API keys)
 
@@ -38,6 +69,7 @@ Only one should be enabled.
 
 Activate this skill when the task involves:
 
+- live tutoring / learn-codebase-style cursor-move explains
 - explaining a function, class, method, or selection
 - finding definitions or usages
 - understanding unfamiliar Python code

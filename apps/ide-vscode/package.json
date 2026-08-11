@@ -79,6 +79,16 @@
           "default": true,
           "description": "Only auto-explain when the active editor is a Python file."
         },
+        "codegraph.liveExplain.writeAgentBridge": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When Live Explain is on, write cursor state to `~/.cursor/codegraph/` (`enabled`, `state.json`, `wake.log`, `pending-prompt.md`) so a watcher/skill can wake Cursor Agent — same pattern as learn-codebase."
+        },
+        "codegraph.liveExplain.compatLearnCodebase": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Also mirror bridge files to `~/.cursor/learn-codebase/` so an existing learn-codebase watcher keeps working."
+        },
         "codegraph.modelAccess.useBuiltInAgent": {
           "type": "boolean",
           "default": true,

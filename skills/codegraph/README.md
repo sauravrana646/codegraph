@@ -34,3 +34,20 @@ npm install && npm run build
 Then merge `assets/mcp.cursor.json` or `assets/mcp.claude-desktop.json` into your MCP config (replace `REPLACE_WITH_CODEGRAPH_ROOT`).
 
 Without MCP, agents can still follow this skill and call `scripts/codegraph.sh`.
+
+## Live tutoring (learn-codebase compatible)
+
+Codegraph Live Explain writes the same kind of bridge files your local learn-codebase skill uses:
+
+```text
+~/.cursor/codegraph/{enabled,state.json,wake.log,pending-prompt.md}
+# mirrored to ~/.cursor/learn-codebase/ by default
+```
+
+1. Install the VSIX + this skill.
+2. Run `scripts/watch-cursor.sh` in a terminal.
+3. Toggle **Codegraph Live Explain** ON.
+4. Tell Agent: `Start Codegraph live tutoring`.
+5. Move the cursor — panel updates immediately; watcher wakes Agent.
+
+See [references/live-tutoring.md](references/live-tutoring.md).

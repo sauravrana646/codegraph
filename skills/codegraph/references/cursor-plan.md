@@ -11,10 +11,12 @@ Pick **one** generative path:
 
 Deterministic tools (definitions, usages, sources, base explanation) always run locally with **no** model.
 
+Details: [references/live-tutoring.md](references/live-tutoring.md).
+
 ## Agent mode
 
-1. Extension builds deterministic context.
-2. Enrichment + narrative explanation are handed to Cursor/Claude agent (subscription model).
+1. Extension builds deterministic context (+ Live Explain bridge files when enabled).
+2. Enrichment + narrative explanation are handed to Cursor/Claude agent (subscription model) via watcher or explicit handoff.
 3. Never ask for API keys.
 4. Agent must cite only Codegraph `file:line` sources.
 

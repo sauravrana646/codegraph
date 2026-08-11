@@ -14,6 +14,8 @@ import {
 import { redactSecrets } from "@codegraph/security";
 import { normalizeWorkspacePath } from "@codegraph/workspace";
 
+import { captureEditorState, setLiveBridgeEnabled } from "./liveBridge";
+
 type SelectionContext = Awaited<ReturnType<typeof buildSelectionContext>>;
 type EnrichedSelectionContext = GatewayEnrichedSelectionContext;
 
@@ -79,17 +81,22 @@ async function setLiveExplainEnabled(enabled: boolean, announce = true): Promise
     await extensionContext.workspaceState.update("codegraph.liveExplain.enabled", enabled);
   }
   updateLiveExplainStatusBar();
+  setLiveBridgeEnabled(enabled);
 
   if (announce) {
     void vscode.window.showInformationMessage(
       enabled
-        ? "Codegraph Live Explain ON — move your cursor or select code; the side panel updates automatically. No Command Palette needed."
+        ? "Codegraph Live Explain ON — panel updates as you move; agent bridge writes ~/.cursor/codegraph (and learn-codebase compat). Run skills/codegraph/scripts/watch-cursor.sh for agent tutoring."
         : "Codegraph Live Explain OFF."
     );
   }
 
   if (enabled) {
     const request = getActiveRequest({ quiet: true });
+    const editor = vscode.window.activeTextEditor;
+    if (request && editor) {
+      captureEditorState(editor, request);
+    }
     if (request && extensionContext) {
       void runExplainSelection(extensionContext, request, { live: true, handOffAgent: false });
     }
@@ -125,7 +132,8 @@ function scheduleLiveExplain(): void {
   const generation = ++liveExplainGeneration;
   liveExplainTimer = setTimeout(() => {
     const request = getActiveRequest({ quiet: true });
-    if (!request || generation !== liveExplainGeneration || !extensionContext) {
+    const editor = vscode.window.activeTextEditor;
+    if (!request || generation !== liveExplainGeneration || !extensionContext || !editor) {
       return;
     }
 
@@ -139,6 +147,8 @@ function scheduleLiveExplain(): void {
       return;
     }
 
+    // learn-codebase-compatible agent bridge: state.json + wake.log (+ pending-prompt.md)
+    captureEditorState(editor, request);
     void runExplainSelection(extensionContext, request, { live: true, handOffAgent: false });
   }, debounceMs);
 }
@@ -168,6 +178,7 @@ export function activate(context: vscode.ExtensionContext): void {
     false;
   liveExplainEnabled = Boolean(saved);
   updateLiveExplainStatusBar();
+  setLiveBridgeEnabled(liveExplainEnabled);
 
   const toggleLiveCommand = vscode.commands.registerCommand("codegraph.toggleLiveExplain", async () => {
     await setLiveExplainEnabled(!liveExplainEnabled);
@@ -505,7 +516,7 @@ async function maybeEnrichSelection(
         used: false,
         provider: access.useBuiltInAgent ? "cursor-agent" : undefined,
         error: access.useBuiltInAgent
-          ? "Live Explain shows deterministic facts continuously. Click Enrich & Explain with Agent when you want the subscription model."
+          ? "Live Explain shows deterministic facts in-panel and writes the agent bridge (~/.cursor/codegraph). Run watch-cursor.sh for live Agent tutoring."
           : "Live Explain shows deterministic facts only."
       }
     };
@@ -833,7 +844,7 @@ function renderExplanationHtml(
       : "API key mode is on, but no API key is configured yet."
     : access.useBuiltInAgent
       ? liveExplainEnabled
-        ? "Live Explain is on: panel updates as you move. Agent enrichment is on-demand (Enrich & Explain with Agent) — chat will not open on every cursor move."
+        ? "Live Explain is on: panel updates as you move. Agent bridge writes ~/.cursor/codegraph (learn-codebase compatible). Run watch-cursor.sh for live Agent tutoring."
         : "Agent mode: enrichment + explanation run through Cursor/Claude agent when you ask (subscription, no API key)."
       : "Model access disabled.";
 
@@ -942,7 +953,7 @@ function renderExplanationHtml(
       <div class="mode-box">
         <strong>Live Explain</strong>
         <p class="muted" style="margin: 6px 0 0;">
-          Toggle once, then move the cursor or select code — this panel updates automatically. No Command Palette on every symbol.
+          Toggle once, then move the cursor — this panel updates automatically. With the agent bridge + <code>watch-cursor.sh</code>, Cursor Agent can tutor live (learn-codebase style) without Command Palette per symbol.
         </p>
       </div>
 
