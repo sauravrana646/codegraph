@@ -28,14 +28,19 @@ Then in Cursor / VS Code:
 
 ### Model access checkboxes
 
-In the explanation panel (and in Settings → Codegraph):
+In the explanation panel (and in Settings → Codegraph), pick **one**:
 
-- **Use built-in Cursor/Claude agent** (default on) — no API key; hand off grounded context to Cursor/Claude agent
-- **Use API key provider** (default off) — OpenAI-compatible enrichment using `codegraph.enrichment.apiKey`
+- **Built-in Cursor/Claude agent** (default) — subscription model does **enrichment + explanation** (no API key)
+- **API key provider** — OpenAI-compatible key does **enrichment** in-panel
 
-For Cursor plans: keep agent on, API key off.
+`autoEnrichOnExplain` (default on) hands off to the agent automatically after Explain Selection in agent mode.
 
-Optional settings under **Codegraph › Enrichment** for API key mode only.
+Commands:
+
+- `Codegraph: Explain Selection`
+- `Codegraph: Ask Cursor/Claude Agent` / panel button **Enrich & Explain with Agent**
+- `Codegraph: Find Definition`
+- `Codegraph: Find Usages`
 
 ## Pair with the Agent Skill
 
