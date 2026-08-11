@@ -4,17 +4,18 @@ Codegraph is a Python-first codebase intelligence platform that helps developers
 
 ## Current status
 
-This repository now contains the first implementation scaffold for the MVP:
+This repository now contains the first usable local MVP slice:
 
-- `apps/ide-vscode` — a VS Code/Cursor extension entry point with an `Explain Selection` command
-- `apps/runtime` — a local runtime CLI prototype
+- `apps/ide-vscode` — a VS Code/Cursor extension with an `Explain Selection` command and side-panel explanation view
+- `apps/runtime` — a local runtime CLI that builds bounded explanation context for a workspace/file/line
 - `packages/protocol` — shared type contracts
 - `packages/workspace` — workspace identity and safe path helpers
 - `packages/security` — secret scanning/redaction and symlink containment checks
-- `packages/core` — initial selection-context assembly logic
+- `packages/core` — deterministic Python-aware selection analysis, definition discovery, reference search, and explanation assembly
 - `docs/` — PRD, TDD, implementation plan, and AI-ready backlog
+- `examples/demo.py` — sample Python file for local smoke testing
 
-This is not the full product yet. It is the first buildable slice that establishes the architecture and local development workflow.
+This is not the full long-term product yet, but it is now usable as a local deterministic explainer for Python-oriented repository exploration.
 
 ## Requirements
 
@@ -46,19 +47,26 @@ npm run typecheck
 
 ## Run the runtime prototype
 
-The runtime currently exposes a simple CLI that builds bounded local context for a file and line.
+The runtime exposes a local CLI that:
+
+- detects a target symbol from the selection or line
+- scans bounded Python files in the workspace
+- finds candidate definitions and references
+- assembles structured explanation output
+- reports capability/confidence metadata
 
 Example:
 
 ```bash
 npm run build --workspace @codegraph/runtime
-npm run start --workspace @codegraph/runtime -- /workspace README.md 1 codegraph
+npm run start --workspace @codegraph/runtime -- /workspace examples/demo.py 10 create
 ```
 
 Expected behavior:
 
 - prints a JSON payload with workspace metadata
-- includes a small redacted excerpt around the selected line
+- includes definitions, references, and related code excerpts
+- includes a structured explanation block
 - reports current capability metadata for the request
 
 ## Run in Cursor IDE
@@ -102,9 +110,10 @@ Because Cursor is VS Code-compatible, the extension can be developed with the no
 Current behavior:
 
 - gathers local selection context
-- computes a bounded result without calling an LLM
-- writes the result to the `Codegraph` output channel
-- shows a small info notification with the current capability tier
+- performs deterministic Python-aware symbol discovery and bounded reference search
+- opens a side panel with summary, sources, inferred claims, and caveats
+- keeps a raw JSON trace in the `Codegraph` output channel for debugging
+- does not call an LLM yet
 
 ## Use this project as a Cursor skill
 
@@ -127,16 +136,26 @@ If you want Cursor agents to use it while working in this repo:
 2. Keep the `.cursor/skills/codegraph/SKILL.md` file committed in the repo.
 3. Ask the agent to work on Codegraph implementation tasks; the agent can read the local skill and follow the repo-specific instructions.
 
+## Current MVP limitations
+
+This first usable version is intentionally narrow:
+
+- Python understanding is heuristic and regex-based, not full AST parsing yet
+- workspace scanning is bounded
+- dynamic/runtime-only references will be missed
+- no model provider integration yet
+- no follow-up conversation session UI yet
+
 ## Recommended next implementation steps
 
 The best next engineering tasks are:
 
-1. implement Python AST parsing
-2. add symbol extraction
-3. add logical section resolution
-4. build deterministic tools such as `find_definition`
-5. add provider abstraction and structured explanation normalization
-6. evolve the extension from an output channel prototype to a panel-based UX
+1. replace regex-only Python analysis with stronger AST-backed parsing
+2. improve logical section detection and scope resolution
+3. promote deterministic primitives into explicit tools such as `find_definition`
+4. add provider abstraction and structured model-backed explanation generation
+5. add follow-up Code Understanding Sessions
+6. add richer source navigation inside the panel
 
 For the full sequence, see:
 
