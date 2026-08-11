@@ -38,7 +38,7 @@ The repository currently contains a usable local MVP:
 2. Improve bounded reference and related-code retrieval
 3. Expand provider adapters beyond OpenAI-compatible endpoints
 4. Expand the VS Code/Cursor extension with richer follow-up UX
-5. Formalize MCP-ready tool schemas around the runtime API
+5. Ship MCP adapter around formal tool envelopes
 
 ## Useful commands
 
@@ -72,6 +72,9 @@ Available API endpoints:
 - `POST /v1/tools/logical-section`
 - `POST /v1/sessions/explain-selection`
 - `POST /v1/sessions/followup`
+
+All successful responses use `{ ok, tool, data, metadata?, enrichment?, session? }`.
+Errors use `{ ok: false, error: { code, message } }`.
 
 Optional enrichment:
 

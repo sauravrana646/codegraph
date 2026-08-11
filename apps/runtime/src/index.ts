@@ -4,12 +4,21 @@ import http from "node:http";
 
 import { buildSelectionContext, findDefinition, findUsages, getLogicalSection } from "@codegraph/core";
 import { enrichSelectionContext } from "@codegraph/model-gateway";
+import {
+  toolError,
+  toolSuccess,
+  type LogicalSectionDepth,
+  type ResolutionMetadata,
+  type ToolEnvelope,
+  type ToolName
+} from "@codegraph/protocol";
 
 interface RuntimeRequestBody {
   rootPath: string;
   filePath: string;
   line: number;
   selectedText?: string;
+  depth?: LogicalSectionDepth;
   enrich?: boolean;
   provider?: {
     apiKey?: string;
@@ -36,6 +45,10 @@ interface RuntimeSession {
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const sessions = new Map<string, RuntimeSession>();
 
+function isLogicalSectionDepth(value: unknown): value is LogicalSectionDepth {
+  return value === "statement" || value === "function" || value === "class" || value === "auto";
+}
+
 function isRuntimeRequestBody(value: unknown): value is RuntimeRequestBody {
   if (!value || typeof value !== "object") {
     return false;
@@ -47,6 +60,7 @@ function isRuntimeRequestBody(value: unknown): value is RuntimeRequestBody {
     typeof candidate.filePath === "string" &&
     typeof candidate.line === "number" &&
     (candidate.selectedText === undefined || typeof candidate.selectedText === "string") &&
+    (candidate.depth === undefined || isLogicalSectionDepth(candidate.depth)) &&
     (candidate.enrich === undefined || typeof candidate.enrich === "boolean") &&
     (candidate.provider === undefined || typeof candidate.provider === "object")
   );
@@ -125,12 +139,21 @@ function mergeRequest(
     filePath: overrides?.filePath ?? baseRequest.filePath,
     line: overrides?.line ?? baseRequest.line,
     selectedText: overrides?.selectedText ?? baseRequest.selectedText,
+    depth: overrides?.depth ?? baseRequest.depth,
     enrich: overrides?.enrich ?? baseRequest.enrich,
     provider: overrides?.provider ?? baseRequest.provider
   };
 }
 
-async function explainWithOptionalEnrichment(request: RuntimeRequestBody) {
+function logicalSectionMetadata(confidence: number): ResolutionMetadata {
+  return {
+    source: "ast",
+    capabilityTier: confidence >= 0.7 ? 2 : 1,
+    confidence
+  };
+}
+
+async function explainEnvelope(request: RuntimeRequestBody) {
   const deterministic = await buildSelectionContext({
     rootPath: request.rootPath,
     filePath: request.filePath,
@@ -138,26 +161,77 @@ async function explainWithOptionalEnrichment(request: RuntimeRequestBody) {
     selectedText: request.selectedText
   });
 
-  return enrichSelectionContext(deterministic, {
+  const enriched = await enrichSelectionContext(deterministic, {
     enabled: request.enrich,
     provider: request.provider
   });
+
+  return toolSuccess(
+    "explain-selection",
+    {
+      workspace: enriched.workspace,
+      context: enriched.context,
+      explanation: enriched.explanation
+    },
+    {
+      metadata: enriched.metadata,
+      enrichment: enriched.enrichment
+    }
+  );
 }
 
-async function runAction(action: SessionAction, request: RuntimeRequestBody): Promise<unknown> {
+async function definitionEnvelope(request: RuntimeRequestBody) {
+  const items = await findDefinition(request);
+  return toolSuccess("find-definition", { items });
+}
+
+async function usagesEnvelope(request: RuntimeRequestBody) {
+  const items = await findUsages(request);
+  return toolSuccess("find-usages", { items });
+}
+
+async function logicalSectionEnvelope(request: RuntimeRequestBody) {
+  const section = await getLogicalSection(request);
+  return toolSuccess("logical-section", { section }, { metadata: logicalSectionMetadata(section.confidence) });
+}
+
+async function runAction(action: SessionAction, request: RuntimeRequestBody): Promise<ToolEnvelope<unknown>> {
   if (action === "explain-selection") {
-    return explainWithOptionalEnrichment(request);
+    return explainEnvelope(request);
   }
 
   if (action === "find-definition") {
-    return findDefinition(request);
+    return definitionEnvelope(request);
   }
 
   if (action === "find-usages") {
-    return findUsages(request);
+    return usagesEnvelope(request);
   }
 
-  return getLogicalSection(request);
+  return logicalSectionEnvelope(request);
+}
+
+function withSession(
+  tool: ToolName,
+  session: RuntimeSession,
+  result: ToolEnvelope<unknown>,
+  action?: string
+): ToolEnvelope<unknown> {
+  if (!result.ok) {
+    return result;
+  }
+
+  return {
+    ...result,
+    tool,
+    session: {
+      sessionId: session.sessionId,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+      ttlMs: SESSION_TTL_MS,
+      ...(action ? { action } : {})
+    }
+  };
 }
 
 async function handleToolRequest(
@@ -168,17 +242,20 @@ async function handleToolRequest(
     pruneExpiredSessions();
 
     if (request.method === "GET" && request.url === "/health") {
-      writeJson(response, 200, {
-        ok: true,
-        service: "codegraph-runtime",
-        activeSessions: sessions.size,
-        enrichmentConfigured: Boolean(process.env.CODEGRAPH_API_KEY || process.env.OPENAI_API_KEY)
-      });
+      writeJson(
+        response,
+        200,
+        toolSuccess("health", {
+          service: "codegraph-runtime",
+          activeSessions: sessions.size,
+          enrichmentConfigured: Boolean(process.env.CODEGRAPH_API_KEY || process.env.OPENAI_API_KEY)
+        })
+      );
       return;
     }
 
     if (request.method !== "POST" || !request.url) {
-      writeJson(response, 404, { error: "Not found" });
+      writeJson(response, 404, toolError("not_found", "Not found"));
       return;
     }
 
@@ -186,83 +263,96 @@ async function handleToolRequest(
 
     if (request.url === "/v1/sessions/explain-selection") {
       if (!isRuntimeRequestBody(payload)) {
-        writeJson(response, 400, {
-          error: "Invalid request body. Expected { rootPath, filePath, line, selectedText?, enrich?, provider? }"
-        });
+        writeJson(
+          response,
+          400,
+          toolError(
+            "invalid_request",
+            "Invalid request body. Expected { rootPath, filePath, line, selectedText?, depth?, enrich?, provider? }",
+            "sessions.explain-selection"
+          )
+        );
         return;
       }
 
       const session = createSession(payload);
-      const result = await explainWithOptionalEnrichment(payload);
-      writeJson(response, 200, {
-        sessionId: session.sessionId,
-        createdAt: session.createdAt,
-        updatedAt: session.updatedAt,
-        ttlMs: SESSION_TTL_MS,
-        result
-      });
+      const result = await explainEnvelope(payload);
+      writeJson(response, 200, withSession("sessions.explain-selection", session, result));
       return;
     }
 
     if (request.url === "/v1/sessions/followup") {
       if (!isSessionFollowupBody(payload)) {
-        writeJson(response, 400, {
-          error: "Invalid session follow-up body. Expected { sessionId, action, requestOverrides? }"
-        });
+        writeJson(
+          response,
+          400,
+          toolError(
+            "invalid_request",
+            "Invalid session follow-up body. Expected { sessionId, action, requestOverrides? }",
+            "sessions.followup"
+          )
+        );
         return;
       }
 
       const session = sessions.get(payload.sessionId);
 
       if (!session) {
-        writeJson(response, 404, { error: "Session not found or expired" });
+        writeJson(
+          response,
+          404,
+          toolError("session_not_found", "Session not found or expired", "sessions.followup")
+        );
         return;
       }
 
       session.request = mergeRequest(session.request, payload.requestOverrides);
       session.updatedAt = Date.now();
 
-      writeJson(response, 200, {
-        sessionId: session.sessionId,
-        action: payload.action,
-        updatedAt: session.updatedAt,
-        result: await runAction(payload.action, session.request)
-      });
+      const result = await runAction(payload.action, session.request);
+      writeJson(response, 200, withSession("sessions.followup", session, result, payload.action));
       return;
     }
 
     if (!isRuntimeRequestBody(payload)) {
-      writeJson(response, 400, {
-        error: "Invalid request body. Expected { rootPath, filePath, line, selectedText?, enrich?, provider? }"
-      });
+      writeJson(
+        response,
+        400,
+        toolError(
+          "invalid_request",
+          "Invalid request body. Expected { rootPath, filePath, line, selectedText?, depth?, enrich?, provider? }"
+        )
+      );
       return;
     }
 
     if (request.url === "/v1/tools/explain-selection") {
-      writeJson(response, 200, await explainWithOptionalEnrichment(payload));
+      writeJson(response, 200, await explainEnvelope(payload));
       return;
     }
 
     if (request.url === "/v1/tools/find-definition") {
-      writeJson(response, 200, await findDefinition(payload));
+      writeJson(response, 200, await definitionEnvelope(payload));
       return;
     }
 
     if (request.url === "/v1/tools/find-usages") {
-      writeJson(response, 200, await findUsages(payload));
+      writeJson(response, 200, await usagesEnvelope(payload));
       return;
     }
 
     if (request.url === "/v1/tools/logical-section") {
-      writeJson(response, 200, await getLogicalSection(payload));
+      writeJson(response, 200, await logicalSectionEnvelope(payload));
       return;
     }
 
-    writeJson(response, 404, { error: "Unknown endpoint" });
+    writeJson(response, 404, toolError("unknown_endpoint", "Unknown endpoint"));
   } catch (error) {
-    writeJson(response, 500, {
-      error: error instanceof Error ? error.message : "Unknown runtime error"
-    });
+    writeJson(
+      response,
+      500,
+      toolError("runtime_error", error instanceof Error ? error.message : "Unknown runtime error")
+    );
   }
 }
 
@@ -283,7 +373,7 @@ async function runExplainCommand(args: string[]): Promise<void> {
     return;
   }
 
-  const result = await explainWithOptionalEnrichment({
+  const result = await explainEnvelope({
     rootPath,
     filePath,
     line,

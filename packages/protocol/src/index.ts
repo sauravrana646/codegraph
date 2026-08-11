@@ -102,7 +102,83 @@ export interface ContextBundle {
   configuration: SourceReference[];
 }
 
+export type ToolName =
+  | "explain-selection"
+  | "find-definition"
+  | "find-usages"
+  | "logical-section"
+  | "sessions.explain-selection"
+  | "sessions.followup"
+  | "health";
+
+export interface ToolEnrichmentMetadata {
+  used: boolean;
+  provider?: string;
+  model?: string;
+  error?: string;
+}
+
+export interface ToolSessionMetadata {
+  sessionId: string;
+  createdAt: number;
+  updatedAt: number;
+  ttlMs?: number;
+  action?: string;
+}
+
+export interface ToolSuccessEnvelope<TData> {
+  ok: true;
+  tool: ToolName | string;
+  data: TData;
+  metadata?: ResolutionMetadata;
+  enrichment?: ToolEnrichmentMetadata;
+  session?: ToolSessionMetadata;
+}
+
+export interface ToolErrorEnvelope {
+  ok: false;
+  tool?: ToolName | string;
+  error: {
+    code: string;
+    message: string;
+  };
+}
+
+export type ToolEnvelope<TData> = ToolSuccessEnvelope<TData> | ToolErrorEnvelope;
+
+/** @deprecated Prefer ToolSuccessEnvelope for API responses. */
 export interface ToolResult<TData> {
   data: TData;
   metadata: ResolutionMetadata;
+}
+
+export function toolSuccess<TData>(
+  tool: ToolName | string,
+  data: TData,
+  extras?: {
+    metadata?: ResolutionMetadata;
+    enrichment?: ToolEnrichmentMetadata;
+    session?: ToolSessionMetadata;
+  }
+): ToolSuccessEnvelope<TData> {
+  return {
+    ok: true,
+    tool,
+    data,
+    ...(extras?.metadata ? { metadata: extras.metadata } : {}),
+    ...(extras?.enrichment ? { enrichment: extras.enrichment } : {}),
+    ...(extras?.session ? { session: extras.session } : {})
+  };
+}
+
+export function toolError(
+  code: string,
+  message: string,
+  tool?: ToolName | string
+): ToolErrorEnvelope {
+  return {
+    ok: false,
+    ...(tool ? { tool } : {}),
+    error: { code, message }
+  };
 }

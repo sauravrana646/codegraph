@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@codegraph/core": "0.1.0",
-    "@codegraph/model-gateway": "0.1.0"
+    "@codegraph/model-gateway": "0.1.0",
+    "@codegraph/protocol": "0.1.0"
   }
 }

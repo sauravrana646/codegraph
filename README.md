@@ -105,9 +105,46 @@ All tool endpoints accept:
   "filePath": "examples/demo.py",
   "line": 10,
   "selectedText": "create",
+  "depth": "auto",
   "enrich": false
 }
 ```
+
+### Response envelope
+
+Every runtime API response uses a shared envelope:
+
+```json
+{
+  "ok": true,
+  "tool": "explain-selection",
+  "data": {},
+  "metadata": {
+    "source": "ast",
+    "capabilityTier": 2,
+    "confidence": 0.82
+  },
+  "enrichment": {
+    "used": false,
+    "error": "Enrichment not requested..."
+  }
+}
+```
+
+Error responses use:
+
+```json
+{
+  "ok": false,
+  "tool": "find-definition",
+  "error": {
+    "code": "invalid_request",
+    "message": "..."
+  }
+}
+```
+
+Session endpoints add a `session` object with `sessionId`, timestamps, and optional `action`.
 
 ### Optional model-backed enrichment
 
@@ -137,18 +174,7 @@ curl -X POST http://127.0.0.1:4311/v1/tools/explain-selection \
   -d '{"rootPath":"/workspace","filePath":"examples/demo.py","line":10,"selectedText":"create","enrich":true}'
 ```
 
-The response includes an `enrichment` block:
-
-```json
-{
-  "enrichment": {
-    "used": false,
-    "error": "Enrichment not requested..."
-  }
-}
-```
-
-If enrichment fails, the deterministic explanation is still returned and the error is reported in `enrichment.error`.
+Successful explain responses place narrative content under `data` and report enrichment at the top level of the envelope. If enrichment fails, deterministic `data` is still returned and the error is reported in `enrichment.error`.
 
 Example:
 
@@ -157,6 +183,9 @@ curl -X POST http://127.0.0.1:4311/v1/tools/find-definition \
   -H "content-type: application/json" \
   -d '{"rootPath":"/workspace","filePath":"examples/demo.py","line":10,"selectedText":"create"}'
 ```
+
+Find-definition / find-usages return `{ "ok": true, "tool": "...", "data": { "items": [...] } }`.
+Logical-section returns `{ "ok": true, "tool": "logical-section", "data": { "section": {...} }, "metadata": {...} }`.
 
 ### Session-based follow-up API
 
