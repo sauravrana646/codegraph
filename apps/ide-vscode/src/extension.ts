@@ -1238,19 +1238,67 @@ async function runExplainSelection(
     captureEditorState(editor, request);
   }
 
-  // Agent mode: pointer only — no AST/LSP gather.
+  // Agent mode: slim pointer goes to Agent chat; local source window fills the panel Jump list.
+  // (Jump list is panel-only — Agent chat never shows Definitions/Usages links.)
   if (agentMode) {
     logCodegraph(`Agent mode explain for ${request.filePath}:${request.line} (live=${live})`, true);
-    const result = await enrichGroundedContext(request, pointerContext(request), {
+    const grounded = await gatherSourceWindowContext(request);
+    if (live && generation !== liveExplainGeneration) {
+      return;
+    }
+
+    const pending: EnrichedSelectionContext = {
+      ...grounded,
+      enrichment: {
+        used: false,
+        provider: "cursor-agent",
+        model: "subscription",
+        error:
+          "Explanation is in Agent chat. Use Jump below for Definitions / Usages (panel-only)."
+      }
+    };
+    currentSession = { request, result: pending };
+    renderExplainPanel(context, request, pending, { live, announce: false });
+
+    const handoff = await enrichGroundedContext(request, pointerContext(request), {
       live,
       handOffAgent: options?.handOffAgent ?? true
     });
     if (live && generation !== liveExplainGeneration) {
       return;
     }
+
+    const result: EnrichedSelectionContext = {
+      ...handoff,
+      context: {
+        ...handoff.context,
+        definitions: grounded.context.definitions,
+        references: grounded.context.references,
+        relatedFiles: grounded.context.relatedFiles,
+        documentation: grounded.context.documentation,
+        configuration: grounded.context.configuration
+      },
+      explanation: {
+        ...handoff.explanation,
+        sources: grounded.explanation.sources.length
+          ? grounded.explanation.sources
+          : handoff.explanation.sources,
+        relatedCode: (grounded.explanation.relatedCode?.length
+          ? grounded.explanation.relatedCode
+          : handoff.explanation.relatedCode) ?? []
+      },
+      metadata: grounded.metadata,
+      enrichment: {
+        ...handoff.enrichment,
+        error: handoff.enrichment.used
+          ? `${handoff.enrichment.error ?? "Sent to Agent."} Jump list is in this panel.`
+          : handoff.enrichment.error
+      }
+    };
     currentSession = { request, result };
+    renderExplainPanel(context, request, result, { live, announce: false });
     logCodegraph(
-      `Agent handoff ${result.enrichment.used ? "OK" : "FAILED"} — ${result.enrichment.error ?? ""}`,
+      `Agent handoff ${result.enrichment.used ? "OK" : "FAILED"} — defs=${result.context.definitions.length} refs=${result.context.references.length} — ${result.enrichment.error ?? ""}`,
       true
     );
     if (!result.enrichment.used) {
@@ -1599,7 +1647,11 @@ function renderExplanationHtml(
       ? definition.line + Math.max(0, definition.excerpt.split("\n").length - 1)
       : line;
   const locationLabel = `${shortFileLabel(filePath)} line ${line}`;
-  const enriched = Boolean(result.enrichment?.used);
+  // Agent mode marks enrichment.used when chat handoff succeeds, but the write-up
+  // lives in Agent chat — only treat API (or other in-panel) enrichment as "enriched".
+  const agentPanel =
+    result.enrichment?.provider === "cursor-agent" || result.enrichment?.provider === "agent";
+  const enriched = Boolean(result.enrichment?.used) && !agentPanel && Boolean(result.explanation.whyItExists);
   const title =
     (enriched ? result.explanation.summary : result.context.target.selectedText) ||
     result.explanation.summary ||
@@ -1674,11 +1726,11 @@ function renderExplanationHtml(
       <p class="continue">${escapeHtml(continueText ?? "Ask about that, or keep moving.")}</p>
     `
     : `
-      <p class="pending">Source window ready. Waiting for ${
+      <p class="pending">${
         result.enrichment?.provider === "cursor-agent" || result.enrichment?.provider === "agent"
-          ? "Agent enrichment"
-          : "API enrichment"
-      } — that model writes the final tutoring explanation.</p>
+          ? "Full write-up is in <strong>Agent chat</strong>. This panel holds the Jump list."
+          : "Source window ready — waiting for API enrichment."
+      }</p>
       <p class="muted">${escapeHtml(result.enrichment?.error || "")}</p>
       ${jumpList}
       <details>
