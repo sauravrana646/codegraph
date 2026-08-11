@@ -105,7 +105,7 @@
     "bundle": "node ./esbuild.mjs",
     "clean": "rm -rf dist",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "package": "npm run bundle && npx --yes @vscode/vsce package --no-dependencies --out ../../artifacts/codegraph-extension.vsix"
+    "package": "npm run bundle && mkdir -p ../../artifacts && npx --yes @vscode/vsce package --no-dependencies --out ../../artifacts/codegraph-extension.vsix"
   },
   "dependencies": {
     "@codegraph/core": "0.1.0",
