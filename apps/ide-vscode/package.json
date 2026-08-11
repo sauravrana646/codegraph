@@ -1,7 +1,7 @@
 {
   "name": "codegraph-ide-vscode",
   "displayName": "Codegraph",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "publisher": "codegraph",
   "description": "Python-first codebase intelligence extension for VS Code and Cursor.",
@@ -36,7 +36,10 @@
     "onCommand:codegraph.diagnoseLiveExplain",
     "onCommand:codegraph.findDefinition",
     "onCommand:codegraph.findUsages",
-    "onCommand:codegraph.configureApiProvider"
+    "onCommand:codegraph.configureApiProvider",
+    "onCommand:codegraph.testApiConnection",
+    "onCommand:codegraph.repoBrief",
+    "onCommand:codegraph.setExplainDepth"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -68,6 +71,18 @@
       {
         "command": "codegraph.configureApiProvider",
         "title": "Codegraph: Configure API Provider"
+      },
+      {
+        "command": "codegraph.testApiConnection",
+        "title": "Codegraph: Test API Connection"
+      },
+      {
+        "command": "codegraph.repoBrief",
+        "title": "Codegraph: Repo Brief"
+      },
+      {
+        "command": "codegraph.setExplainDepth",
+        "title": "Codegraph: Set Explain Depth"
       }
     ],
     "configuration": {
@@ -114,6 +129,17 @@
           "type": "boolean",
           "default": false,
           "markdownDescription": "Use an **API key provider** for in-panel enrichment of the same sections during Live Explain and one-shot Explain."
+        },
+        "codegraph.explain.depth": {
+          "type": "string",
+          "default": "standard",
+          "enum": ["short", "standard", "deep"],
+          "enumDescriptions": [
+            "Short purpose only",
+            "Purpose + fields + notes",
+            "Deep: connections, shapes, caveats"
+          ],
+          "markdownDescription": "How detailed Live Explain / Agent / API enrichment answers should be."
         },
         "codegraph.modelAccess.autoEnrichOnExplain": {
           "type": "boolean",

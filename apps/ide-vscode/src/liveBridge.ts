@@ -62,6 +62,9 @@ function appendWake(dir: string, state: LiveCursorState): void {
 function writePendingPrompt(dir: string, state: LiveCursorState): void {
   ensureDir(dir);
   // Slim pointer only — Agent reads source (no AST/LSP dumps).
+  const depthRaw =
+    vscode.workspace.getConfiguration("codegraph.explain").get<string>("depth") ?? "standard";
+  const depth = depthRaw === "short" || depthRaw === "deep" ? depthRaw : "standard";
   const prompt = [
     "codegraph-slim-v3",
     "Use the Codegraph skill / MCP tools.",
@@ -74,6 +77,7 @@ function writePendingPrompt(dir: string, state: LiveCursorState): void {
     `filePath: ${state.filePath}`,
     `line: ${state.line}`,
     `symbol: ${state.selection || "(cursor only)"}`,
+    `depth: ${depth}`,
     "",
     "REQUIRED FLOW:",
     "1) Open/read `filePath` around `line` (or call Codegraph `logical_section`).",

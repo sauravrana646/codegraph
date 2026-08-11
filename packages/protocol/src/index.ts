@@ -48,6 +48,9 @@ export interface SourceReference {
 
 export type LogicalSectionDepth = "statement" | "function" | "class" | "auto";
 
+/** Narrative detail for Live Explain / Agent handoff / API enrichment. */
+export type ExplainDepth = "short" | "standard" | "deep";
+
 export interface FlowStep {
   title: string;
   detail: string;

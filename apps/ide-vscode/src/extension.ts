@@ -3,18 +3,22 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { buildSelectionContext, findDefinition, findUsages } from "@codegraph/core";
+import { buildRepoBrief, buildSelectionContext, findDefinition, findUsages } from "@codegraph/core";
 import {
   applyEnrichmentText,
   buildPointerAgentHandoffPrompt,
+  buildRepoBriefAgentPrompt,
   buildHostEnrichmentPrompt,
   enrichSelectionContext,
   ENRICHMENT_PROVIDER_PRESETS,
   getEnrichmentProviderPreset,
+  modelPresetsForProvider,
   resolveEnrichmentBaseUrl,
   SLIM_HANDOFF_MARKER,
+  testProviderConnection,
   type EnrichmentMetadata,
-  type EnrichedSelectionContext as GatewayEnrichedSelectionContext
+  type EnrichedSelectionContext as GatewayEnrichedSelectionContext,
+  type ExplainDepth
 } from "@codegraph/model-gateway";
 import { redactSecrets } from "@codegraph/security";
 import { normalizeWorkspacePath } from "@codegraph/workspace";
@@ -47,6 +51,8 @@ let liveExplainGeneration = 0;
 let extensionContext: vscode.ExtensionContext | undefined;
 let lastAgentHandOffMs = 0;
 let agentChatOpened = false;
+/** Same-symbol skip key: root|file|symbol (line changes within a symbol do not re-fire). */
+let lastLiveExplainKey = "";
 
 function getOutputChannel(): vscode.OutputChannel {
   if (!outputChannel) {
@@ -54,6 +60,32 @@ function getOutputChannel(): vscode.OutputChannel {
   }
 
   return outputChannel;
+}
+
+function explainDepthSetting(): ExplainDepth {
+  const raw = vscode.workspace.getConfiguration("codegraph.explain").get<string>("depth") ?? "standard";
+  if (raw === "short" || raw === "deep" || raw === "standard") {
+    return raw;
+  }
+  return "standard";
+}
+
+function symbolKeyFromEditor(
+  editor: vscode.TextEditor,
+  request: { rootPath: string; filePath: string; line: number; selectedText?: string }
+): string {
+  const selected = (request.selectedText ?? "").trim();
+  if (selected) {
+    const ident = selected.match(/[A-Za-z_][A-Za-z0-9_]*/)?.[0] ?? selected.slice(0, 64);
+    return `${request.rootPath}|${request.filePath}|${ident}`;
+  }
+  const wordRange = editor.document.getWordRangeAtPosition(editor.selection.active, /[A-Za-z_][A-Za-z0-9_]*/);
+  const word = wordRange ? editor.document.getText(wordRange).trim() : "";
+  if (word) {
+    return `${request.rootPath}|${request.filePath}|${word}`;
+  }
+  // No symbol — fall back to exact line so blank areas still can explain once.
+  return `${request.rootPath}|${request.filePath}|:${request.line}`;
 }
 
 function liveExplainConfig(): { debounceMs: number; pythonOnly: boolean } {
@@ -119,6 +151,23 @@ async function setLiveExplainEnabled(enabled: boolean, announce = true): Promise
   }
 
   if (enabled) {
+    lastLiveExplainKey = "";
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (folder && extensionContext) {
+      const briefKey = `codegraph.repoBrief.done:${folder.uri.fsPath}`;
+      if (!extensionContext.workspaceState.get<boolean>(briefKey)) {
+        const choice = await vscode.window.showInformationMessage(
+          "First time in this workspace — run a quick repo brief?",
+          "Repo brief",
+          "Skip"
+        );
+        if (choice === "Repo brief") {
+          await runRepoBrief({ force: true });
+        } else if (choice === "Skip") {
+          await extensionContext.workspaceState.update(briefKey, true);
+        }
+      }
+    }
     const request = getActiveRequest({ quiet: true });
     const editor = vscode.window.activeTextEditor;
     if (!request) {
@@ -191,7 +240,14 @@ function scheduleLiveExplain(): void {
       return;
     }
 
-    logCodegraph(`Live tick → ${request.filePath}:${request.line}`);
+    const key = symbolKeyFromEditor(activeEditor, request);
+    if (key && key === lastLiveExplainKey) {
+      logCodegraph(`Live tick skipped (same symbol) ${key}`);
+      return;
+    }
+    lastLiveExplainKey = key;
+
+    logCodegraph(`Live tick → ${request.filePath}:${request.line} key=${key}`);
     void runExplainSelection(extensionContext, request, { live: true, handOffAgent: true });
   }, debounceMs);
 }
@@ -258,7 +314,10 @@ export function activate(context: vscode.ExtensionContext): void {
     logCodegraph(`bridgeEnabled exists=${fs.existsSync(enabledPath)}`);
 
     if (request) {
-      const expected = buildPointerAgentHandoffPrompt(request);
+      const expected = buildPointerAgentHandoffPrompt({
+        ...request,
+        depth: explainDepthSetting()
+      });
       logCodegraph(`expectedHandoffChars=${expected.length}`);
       logCodegraph("--- expected slim prompt ---");
       logCodegraph(expected);
@@ -363,6 +422,33 @@ export function activate(context: vscode.ExtensionContext): void {
     await configureApiProvider({ enableApiKeyMode: true });
   });
 
+  const testApiCommand = vscode.commands.registerCommand("codegraph.testApiConnection", async () => {
+    await runTestApiConnection();
+  });
+
+  const repoBriefCommand = vscode.commands.registerCommand("codegraph.repoBrief", async () => {
+    await runRepoBrief({ force: true });
+  });
+
+  const setDepthCommand = vscode.commands.registerCommand("codegraph.setExplainDepth", async () => {
+    const picked = await vscode.window.showQuickPick(
+      [
+        { label: "Short", description: "2–4 sentence purpose", depth: "short" as const },
+        { label: "Standard", description: "Purpose + fields + notes", depth: "standard" as const },
+        { label: "Deep", description: "Connections, shapes, caveats", depth: "deep" as const }
+      ],
+      { title: "Codegraph explain depth", placeHolder: "How detailed should explanations be?" }
+    );
+    if (!picked) {
+      return;
+    }
+    await vscode.workspace
+      .getConfiguration("codegraph.explain")
+      .update("depth", picked.depth, vscode.ConfigurationTarget.Workspace);
+    lastLiveExplainKey = "";
+    void vscode.window.showInformationMessage(`Explain depth: ${picked.label}`);
+  });
+
   const configListener = vscode.workspace.onDidChangeConfiguration(async (event) => {
     if (!event.affectsConfiguration("codegraph.enrichment.provider")) {
       return;
@@ -406,6 +492,9 @@ export function activate(context: vscode.ExtensionContext): void {
     definitionCommand,
     usagesCommand,
     configureApiCommand,
+    testApiCommand,
+    repoBriefCommand,
+    setDepthCommand,
     configListener,
     selectionListener,
     editorListener,
@@ -577,20 +666,41 @@ async function configureApiProvider(options?: { enableApiKeyMode?: boolean }): P
     return false;
   }
 
-  const model = await vscode.window.showInputBox({
+  const modelChoices = [
+    ...modelPresetsForProvider(preset.id).map((id) => ({
+      label: id,
+      description: id === preset.defaultModel ? "default" : undefined,
+      model: id
+    })),
+    { label: "Custom model id…", description: "type any model string", model: "__custom__" }
+  ];
+  const modelPick = await vscode.window.showQuickPick(modelChoices, {
     title: `${preset.label} model`,
-    prompt: "Model id for this provider",
-    value: enrichment.get<string>("model")?.trim() || preset.defaultModel,
+    placeHolder: "Select a preset model",
     ignoreFocusOut: true
   });
-  if (!model?.trim()) {
+  if (!modelPick) {
     return false;
+  }
+
+  let model = modelPick.model;
+  if (model === "__custom__") {
+    const entered = await vscode.window.showInputBox({
+      title: `${preset.label} custom model`,
+      prompt: "Model id for this provider",
+      value: enrichment.get<string>("model")?.trim() || preset.defaultModel,
+      ignoreFocusOut: true
+    });
+    if (!entered?.trim()) {
+      return false;
+    }
+    model = entered.trim();
   }
 
   const baseUrl = resolveEnrichmentBaseUrl(preset.id, customBaseUrl);
   await enrichment.update("provider", preset.id, vscode.ConfigurationTarget.Workspace);
   await enrichment.update("apiKey", apiKey.trim(), vscode.ConfigurationTarget.Workspace);
-  await enrichment.update("model", model.trim(), vscode.ConfigurationTarget.Workspace);
+  await enrichment.update("model", model, vscode.ConfigurationTarget.Workspace);
   await enrichment.update("baseUrl", preset.id === "custom" ? baseUrl : "", vscode.ConfigurationTarget.Workspace);
   await enrichment.update("preferIdeHost", false, vscode.ConfigurationTarget.Workspace);
 
@@ -601,10 +711,162 @@ async function configureApiProvider(options?: { enableApiKeyMode?: boolean }): P
     await enrichment.update("enabled", true, vscode.ConfigurationTarget.Workspace);
   }
 
-  void vscode.window.showInformationMessage(
-    `Codegraph API provider: ${preset.label} · model ${model.trim()} · ${baseUrl}`
+  const test = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: "Codegraph: testing API connection…" },
+    async () =>
+      testProviderConnection({
+        providerId: preset.id,
+        apiKey: apiKey.trim(),
+        baseUrl,
+        model
+      })
   );
+
+  if (test.ok) {
+    void vscode.window.showInformationMessage(
+      `Codegraph API OK · ${preset.label} · ${model} · ${test.latencyMs}ms`
+    );
+  } else {
+    void vscode.window.showWarningMessage(
+      `Codegraph saved ${preset.label}/${model}, but connection failed: ${test.error ?? "unknown"}`
+    );
+  }
   return true;
+}
+
+async function runTestApiConnection(): Promise<void> {
+  const access = modelAccessConfig();
+  if (!access.apiKey) {
+    const configured = await configureApiProvider({ enableApiKeyMode: true });
+    if (!configured) {
+      return;
+    }
+  }
+  const latest = modelAccessConfig();
+  if (!latest.apiKey) {
+    void vscode.window.showWarningMessage("No API key configured.");
+    return;
+  }
+
+  const result = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: "Codegraph: testing API connection…" },
+    async () =>
+      testProviderConnection({
+        providerId: latest.providerId,
+        apiKey: latest.apiKey!,
+        baseUrl: latest.baseUrl,
+        model: latest.model
+      })
+  );
+
+  logCodegraph(
+    `API test ${result.ok ? "OK" : "FAIL"} provider=${result.provider} model=${result.model} ${result.latencyMs}ms ${result.error ?? ""}`,
+    true
+  );
+  if (result.ok) {
+    void vscode.window.showInformationMessage(
+      `Connection OK · ${latest.providerLabel} · ${result.model} · ${result.latencyMs}ms`
+    );
+  } else {
+    void vscode.window.showErrorMessage(`Connection failed: ${result.error ?? "unknown error"}`);
+  }
+}
+
+async function runRepoBrief(options?: { force?: boolean }): Promise<void> {
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (!folder) {
+    void vscode.window.showWarningMessage("Open a folder workspace to run a repo brief.");
+    return;
+  }
+
+  const rootPath = folder.uri.fsPath;
+  const stateKey = `codegraph.repoBrief.done:${rootPath}`;
+  if (!options?.force && extensionContext?.workspaceState.get<boolean>(stateKey)) {
+    return;
+  }
+
+  const brief = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: "Codegraph: scanning repo brief…" },
+    async () => buildRepoBrief(rootPath)
+  );
+
+  logCodegraph("=== Repo brief ===", true);
+  for (const line of brief.summaryLines) {
+    logCodegraph(line);
+  }
+  for (const symbol of brief.notableSymbols.slice(0, 16)) {
+    logCodegraph(`- ${symbol.kind} ${symbol.name} @ ${symbol.file}:${symbol.line}`);
+  }
+
+  await extensionContext?.workspaceState.update(stateKey, true);
+
+  const access = modelAccessConfig();
+  if (access.useBuiltInAgent && !access.useApiKeyProvider) {
+    const prompt = buildRepoBriefAgentPrompt({
+      rootPath: brief.rootPath,
+      summaryLines: brief.summaryLines,
+      notableSymbols: brief.notableSymbols
+    });
+    const ok = await handOffToCursorAgent(prompt, { forceNew: true });
+    void vscode.window.showInformationMessage(
+      ok
+        ? "Repo brief sent to Agent chat."
+        : "Repo brief ready in Output → Codegraph (Agent auto-send failed)."
+    );
+    return;
+  }
+
+  if (access.useApiKeyProvider && extensionContext) {
+    const pending = {
+      ...pointerContext({
+        rootPath,
+        filePath: brief.entrypoints[0] ?? brief.notableSymbols[0]?.file ?? ".",
+        line: brief.notableSymbols[0]?.line ?? 1,
+        selectedText: brief.notableSymbols[0]?.name
+      }),
+      explanation: {
+        ...pointerContext({
+          rootPath,
+          filePath: brief.entrypoints[0] ?? ".",
+          line: 1
+        }).explanation,
+        summary: "Repository brief",
+        whyItExists: brief.summaryLines.join("\n\n"),
+        whatItDoes: brief.notableSymbols
+          .slice(0, 12)
+          .map((item) => `| ${item.name} | ${item.kind} @ ${item.file}:${item.line} |`)
+          .join("\n"),
+        howItWorks: brief.entrypoints.length
+          ? `Entrypoints:\n${brief.entrypoints.map((item) => `- ${item}`).join("\n")}`
+          : "",
+        codebaseUsage: "Ask about a file, or turn on Live Explain and keep moving.",
+        sources: brief.notableSymbols.slice(0, 12).map((item) => ({
+          file: item.file,
+          line: item.line,
+          kind: "definition" as const
+        }))
+      },
+      enrichment: {
+        used: true,
+        provider: "repo-brief",
+        model: "local-scan"
+      }
+    };
+    currentSession = {
+      request: {
+        rootPath,
+        filePath: brief.entrypoints[0] ?? brief.notableSymbols[0]?.file ?? ".",
+        line: brief.notableSymbols[0]?.line ?? 1,
+        selectedText: brief.notableSymbols[0]?.name
+      },
+      result: pending
+    };
+    renderExplainPanel(extensionContext, currentSession.request, pending, { live: false, announce: false });
+    void vscode.window.showInformationMessage("Repo brief ready in the Codegraph panel.");
+    return;
+  }
+
+  void vscode.window.showInformationMessage("Repo brief written to Output → Codegraph.");
 }
 
 function enrichmentStatusLabel(enrichment?: EnrichmentMetadata): string {
@@ -713,6 +975,7 @@ async function enrichViaApiKey(deterministic: SelectionContext): Promise<Enriche
   return enrichSelectionContext(deterministic, {
     enabled: true,
     trustProviderConfig: true,
+    depth: explainDepthSetting(),
     provider: {
       providerId: access.providerId,
       apiKey: access.apiKey,
@@ -726,7 +989,10 @@ async function enrichViaAgent(
   request: { rootPath: string; filePath: string; line: number; selectedText?: string },
   options?: { handOff?: boolean; forceNewChat?: boolean }
 ): Promise<EnrichedSelectionContext> {
-  const prompt = buildPointerAgentHandoffPrompt(request);
+  const prompt = buildPointerAgentHandoffPrompt({
+    ...request,
+    depth: explainDepthSetting()
+  });
   logCodegraph(`Agent prompt ${SLIM_HANDOFF_MARKER} chars=${prompt.length}`);
   logCodegraph(prompt);
 
@@ -1069,6 +1335,7 @@ async function handlePanelMessage(message: unknown): Promise<void> {
     line?: number;
     useBuiltInAgent?: boolean;
     useApiKeyProvider?: boolean;
+    depth?: string;
   };
 
   if (parsed.type === "openSource" && parsed.file && currentSession) {
@@ -1093,6 +1360,36 @@ async function handlePanelMessage(message: unknown): Promise<void> {
 
   if (parsed.type === "toggleLiveExplain") {
     await vscode.commands.executeCommand("codegraph.toggleLiveExplain");
+    return;
+  }
+
+  if (parsed.type === "setExplainDepth") {
+    const depth = parsed.depth === "short" || parsed.depth === "deep" || parsed.depth === "standard"
+      ? parsed.depth
+      : "standard";
+    await vscode.workspace
+      .getConfiguration("codegraph.explain")
+      .update("depth", depth, vscode.ConfigurationTarget.Workspace);
+    lastLiveExplainKey = "";
+    void vscode.window.showInformationMessage(`Explain depth: ${depth}`);
+    if (panel && currentSession && extensionContext) {
+      panel.webview.html = renderExplanationHtml(
+        currentSession.request.filePath,
+        currentSession.request.line,
+        currentSession.result,
+        { logoUri: extensionIconWebviewUri(panel.webview) }
+      );
+    }
+    return;
+  }
+
+  if (parsed.type === "repoBrief") {
+    await runRepoBrief({ force: true });
+    return;
+  }
+
+  if (parsed.type === "testApiConnection") {
+    await runTestApiConnection();
     return;
   }
 
@@ -1271,6 +1568,47 @@ function renderExplanationHtml(
     .join("\n");
   const resolution = `${result.metadata.source} · tier ${result.metadata.capabilityTier}`;
   const logoUri = options?.logoUri;
+  const depth = explainDepthSetting();
+  const definitions = (result.context.definitions?.length
+    ? result.context.definitions
+    : result.explanation.sources.filter((source) => source.kind === "definition")
+  ).slice(0, 8);
+  const usages = (result.context.references?.length
+    ? result.context.references
+    : result.explanation.sources.filter((source) => source.kind !== "definition")
+  ).slice(0, 10);
+
+  const jumpList = `
+      <h2>Jump</h2>
+      <div class="jump">
+        <div>
+          <div class="jump-label">Definitions</div>
+          ${
+            definitions.length
+              ? `<ul class="jump-list">${definitions
+                  .map(
+                    (item) =>
+                      `<li><button class="source-link" data-file="${escapeAttribute(item.file)}" data-line="${item.line}">${escapeHtml(shortFileLabel(item.file))}:${item.line}</button></li>`
+                  )
+                  .join("")}</ul>`
+              : `<p class="muted">None yet · <button data-action="findDefinition">Find definition</button></p>`
+          }
+        </div>
+        <div>
+          <div class="jump-label">Usages</div>
+          ${
+            usages.length
+              ? `<ul class="jump-list">${usages
+                  .map(
+                    (item) =>
+                      `<li><button class="source-link" data-file="${escapeAttribute(item.file)}" data-line="${item.line}">${escapeHtml(shortFileLabel(item.file))}:${item.line}</button></li>`
+                  )
+                  .join("")}</ul>`
+              : `<p class="muted">None yet · <button data-action="findUsages">Find usages</button></p>`
+          }
+        </div>
+      </div>
+    `;
 
   const body = enriched
     ? `
@@ -1285,6 +1623,8 @@ function renderExplanationHtml(
 
       ${usageBody.trim() ? `<h2>In this codebase</h2>${renderMarkdownLite(usageBody)}` : ""}
 
+      ${jumpList}
+
       <p class="continue">${escapeHtml(continueText ?? "Ask about that, or keep moving.")}</p>
     `
     : `
@@ -1294,6 +1634,7 @@ function renderExplanationHtml(
           : "API enrichment"
       } — that model writes the final tutoring explanation.</p>
       <p class="muted">${escapeHtml(result.enrichment?.error || "")}</p>
+      ${jumpList}
       <details>
         <summary class="muted">Raw grounded context</summary>
         <pre>${escapeHtml(result.explanation.howItWorks || "")}</pre>
@@ -1432,6 +1773,45 @@ function renderExplanationHtml(
         details {
           margin-top: 12px;
         }
+        .toolbar {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          align-items: center;
+          margin: 0 0 14px;
+          font-size: 0.82rem;
+        }
+        .chip {
+          border: 1px solid var(--vscode-input-border, transparent);
+          background: var(--vscode-button-secondaryBackground, transparent);
+          color: var(--vscode-foreground);
+          border-radius: 999px;
+          padding: 3px 10px;
+          cursor: pointer;
+          font: inherit;
+        }
+        .chip.active {
+          border-color: var(--cg-teal);
+          color: var(--cg-teal);
+        }
+        .jump {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 12px;
+        }
+        .jump-label {
+          font-size: 0.8rem;
+          color: var(--vscode-descriptionForeground);
+          margin-bottom: 4px;
+        }
+        .jump-list {
+          margin: 0;
+          padding-left: 1.1rem;
+          font-size: 0.88rem;
+        }
+        @media (max-width: 520px) {
+          .jump { grid-template-columns: 1fr; }
+        }
       </style>
     </head>
     <body>
@@ -1442,6 +1822,15 @@ function renderExplanationHtml(
             : `<span class="brand-name">◆</span>`
         }
         <span class="brand-name">Codegraph</span>
+      </div>
+      <div class="toolbar">
+        <span class="muted">Depth</span>
+        <button class="chip ${depth === "short" ? "active" : ""}" data-action="setExplainDepth" data-depth="short">Short</button>
+        <button class="chip ${depth === "standard" ? "active" : ""}" data-action="setExplainDepth" data-depth="standard">Standard</button>
+        <button class="chip ${depth === "deep" ? "active" : ""}" data-action="setExplainDepth" data-depth="deep">Deep</button>
+        <button class="chip" data-action="findDefinition">Find definition</button>
+        <button class="chip" data-action="findUsages">Find usages</button>
+        <button class="chip" data-action="repoBrief">Repo brief</button>
       </div>
       <h1>${escapeHtml(title)}</h1>
       <p class="location">${escapeHtml(locationLabel)} · ${escapeHtml(resolution)}</p>
@@ -1480,7 +1869,9 @@ function renderExplanationHtml(
         });
         document.querySelectorAll("[data-action]").forEach((node) => {
           node.addEventListener("click", () => {
-            vscode.postMessage({ type: node.getAttribute("data-action") });
+            const type = node.getAttribute("data-action");
+            const depth = node.getAttribute("data-depth");
+            vscode.postMessage(depth ? { type, depth } : { type });
           });
         });
       </script>

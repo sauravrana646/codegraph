@@ -15,6 +15,8 @@ export interface EnrichmentProviderPreset {
   /** OpenAI-compatible chat completions root (no trailing slash). Empty for custom. */
   baseUrl: string;
   defaultModel: string;
+  /** Suggested model ids for QuickPick presets. */
+  models: string[];
   /** Whether the provider reliably accepts response_format=json_object. */
   supportsJsonObject: boolean;
   description: string;
@@ -26,6 +28,7 @@ export const ENRICHMENT_PROVIDER_PRESETS: readonly EnrichmentProviderPreset[] = 
     label: "OpenAI",
     baseUrl: "https://api.openai.com/v1",
     defaultModel: "gpt-4o-mini",
+    models: ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "o4-mini"],
     supportsJsonObject: true,
     description: "OpenAI Chat Completions API"
   },
@@ -34,6 +37,15 @@ export const ENRICHMENT_PROVIDER_PRESETS: readonly EnrichmentProviderPreset[] = 
     label: "OpenRouter",
     baseUrl: "https://openrouter.ai/api/v1",
     defaultModel: "openai/gpt-4o-mini",
+    models: [
+      "openai/gpt-4o-mini",
+      "openai/gpt-4o",
+      "anthropic/claude-3.5-sonnet",
+      "anthropic/claude-sonnet-4",
+      "google/gemini-2.0-flash-001",
+      "google/gemini-2.5-pro-preview",
+      "meta-llama/llama-3.3-70b-instruct"
+    ],
     supportsJsonObject: true,
     description: "Route to OpenAI, Claude, Gemini, and more"
   },
@@ -42,6 +54,7 @@ export const ENRICHMENT_PROVIDER_PRESETS: readonly EnrichmentProviderPreset[] = 
     label: "Groq",
     baseUrl: "https://api.groq.com/openai/v1",
     defaultModel: "llama-3.3-70b-versatile",
+    models: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768", "gemma2-9b-it"],
     supportsJsonObject: true,
     description: "Groq OpenAI-compatible endpoint"
   },
@@ -50,6 +63,11 @@ export const ENRICHMENT_PROVIDER_PRESETS: readonly EnrichmentProviderPreset[] = 
     label: "Together AI",
     baseUrl: "https://api.together.xyz/v1",
     defaultModel: "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+    models: [
+      "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+      "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+      "Qwen/Qwen2.5-72B-Instruct-Turbo"
+    ],
     supportsJsonObject: true,
     description: "Together OpenAI-compatible endpoint"
   },
@@ -58,6 +76,11 @@ export const ENRICHMENT_PROVIDER_PRESETS: readonly EnrichmentProviderPreset[] = 
     label: "Fireworks",
     baseUrl: "https://api.fireworks.ai/inference/v1",
     defaultModel: "accounts/fireworks/models/llama-v3p1-70b-instruct",
+    models: [
+      "accounts/fireworks/models/llama-v3p1-70b-instruct",
+      "accounts/fireworks/models/llama-v3p3-70b-instruct",
+      "accounts/fireworks/models/qwen2p5-72b-instruct"
+    ],
     supportsJsonObject: false,
     description: "Fireworks OpenAI-compatible endpoint"
   },
@@ -66,6 +89,7 @@ export const ENRICHMENT_PROVIDER_PRESETS: readonly EnrichmentProviderPreset[] = 
     label: "DeepSeek",
     baseUrl: "https://api.deepseek.com",
     defaultModel: "deepseek-chat",
+    models: ["deepseek-chat", "deepseek-reasoner"],
     supportsJsonObject: true,
     description: "DeepSeek OpenAI-compatible endpoint"
   },
@@ -74,6 +98,7 @@ export const ENRICHMENT_PROVIDER_PRESETS: readonly EnrichmentProviderPreset[] = 
     label: "Mistral",
     baseUrl: "https://api.mistral.ai/v1",
     defaultModel: "mistral-small-latest",
+    models: ["mistral-small-latest", "mistral-medium-latest", "mistral-large-latest", "codestral-latest"],
     supportsJsonObject: true,
     description: "Mistral OpenAI-compatible endpoint"
   },
@@ -82,6 +107,7 @@ export const ENRICHMENT_PROVIDER_PRESETS: readonly EnrichmentProviderPreset[] = 
     label: "Google Gemini",
     baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
     defaultModel: "gemini-2.0-flash",
+    models: ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-pro", "gemini-1.5-pro"],
     supportsJsonObject: true,
     description: "Gemini OpenAI-compatible endpoint"
   },
@@ -90,6 +116,7 @@ export const ENRICHMENT_PROVIDER_PRESETS: readonly EnrichmentProviderPreset[] = 
     label: "Custom (OpenAI-compatible)",
     baseUrl: "",
     defaultModel: "gpt-4o-mini",
+    models: ["gpt-4o-mini", "gpt-4o"],
     supportsJsonObject: false,
     description: "Any OpenAI-compatible /v1/chat/completions host"
   }
@@ -124,4 +151,13 @@ export function resolveEnrichmentBaseUrl(
 
 export function defaultModelForProvider(providerId: string | undefined): string {
   return getEnrichmentProviderPreset(providerId).defaultModel;
+}
+
+export function modelPresetsForProvider(providerId: string | undefined): string[] {
+  const preset = getEnrichmentProviderPreset(providerId);
+  const models = [...preset.models];
+  if (!models.includes(preset.defaultModel)) {
+    models.unshift(preset.defaultModel);
+  }
+  return models;
 }

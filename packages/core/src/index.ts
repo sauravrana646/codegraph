@@ -762,3 +762,114 @@ export async function buildSelectionContext(request: ExplainSelectionRequest): P
     explanation
   };
 }
+
+export interface RepoBriefSymbol {
+  file: string;
+  line: number;
+  name: string;
+  kind: string;
+}
+
+export interface RepoBrief {
+  rootPath: string;
+  pythonFileCount: number;
+  topLevelPackages: string[];
+  entrypoints: string[];
+  notableSymbols: RepoBriefSymbol[];
+  summaryLines: string[];
+}
+
+/**
+ * Lightweight first-look map of a Python workspace (no narrative dump).
+ */
+export async function buildRepoBrief(rootPath: string): Promise<RepoBrief> {
+  const workspace = createWorkspaceSummary(rootPath);
+  const files = await walkWorkspaceFiles(workspace.rootPath);
+  const pythonFiles = files.filter((file) => file.endsWith(".py")).slice(0, 200);
+
+  const packages = new Set<string>();
+  for (const file of pythonFiles) {
+    const normalized = file.replace(/\\/g, "/");
+    const parts = normalized.split("/");
+    if (parts.length > 1 && parts[0] && !parts[0].startsWith(".")) {
+      packages.add(parts[0]);
+    }
+  }
+
+  const entrypointHints = [
+    "main.py",
+    "app.py",
+    "manage.py",
+    "wsgi.py",
+    "asgi.py",
+    "__main__.py",
+    "cli.py",
+    "server.py"
+  ];
+  const entrypoints = pythonFiles
+    .filter((file) => {
+      const base = file.replace(/\\/g, "/").split("/").pop() ?? "";
+      return entrypointHints.includes(base) || /(?:^|\/)__main__\.py$/.test(file.replace(/\\/g, "/"));
+    })
+    .slice(0, 12);
+
+  const sampleFiles = [
+    ...entrypoints,
+    ...pythonFiles.filter((file) => !entrypoints.includes(file))
+  ].slice(0, 40);
+
+  const notableSymbols: RepoBriefSymbol[] = [];
+  for (const file of sampleFiles) {
+    try {
+      const contained = await readContainedFile(workspace.rootPath, file);
+      const parseResult = await parsePythonFile(contained.absolutePath, contained.content);
+      const symbols = hydratePythonSymbols(contained.relativePath, contained.content, parseResult.symbols);
+      for (const symbol of symbols) {
+        if (symbol.kind === "class" || symbol.kind === "function") {
+          // Prefer module-level-ish symbols (shallower indent / earlier in file).
+          if (symbol.line <= 120 || symbol.kind === "class") {
+            notableSymbols.push({
+              file: symbol.file,
+              line: symbol.line,
+              name: symbol.name,
+              kind: symbol.kind
+            });
+          }
+        }
+      }
+    } catch {
+      // Skip unreadable files.
+    }
+  }
+
+  const ranked = notableSymbols
+    .sort((left, right) => {
+      const kindScore = (kind: string) => (kind === "class" ? 0 : 1);
+      return kindScore(left.kind) - kindScore(right.kind) || left.file.localeCompare(right.file) || left.line - right.line;
+    })
+    .slice(0, 24);
+
+  const topLevelPackages = [...packages].sort().slice(0, 16);
+  const summaryLines = [
+    `Python files scanned: ${pythonFiles.length}`,
+    topLevelPackages.length
+      ? `Top-level packages/dirs: ${topLevelPackages.join(", ")}`
+      : "Top-level packages/dirs: (flat layout)",
+    entrypoints.length ? `Entrypoints: ${entrypoints.join(", ")}` : "Entrypoints: (none obvious)",
+    ranked.length
+      ? `Notable symbols: ${ranked
+          .slice(0, 8)
+          .map((item) => `${item.name} (${item.kind})`)
+          .join(", ")}`
+      : "Notable symbols: (none resolved)"
+  ];
+
+  return {
+    rootPath: workspace.rootPath,
+    pythonFileCount: pythonFiles.length,
+    topLevelPackages,
+    entrypoints,
+    notableSymbols: ranked,
+    summaryLines
+  };
+}

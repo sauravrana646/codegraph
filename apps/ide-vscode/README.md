@@ -50,6 +50,10 @@ Settings:
 - `Codegraph: Toggle Live Explain Mode` — continuous explain on/off
 - `Codegraph: Explain Selection` — one-shot explain for the current cursor/selection
 - `Codegraph: Enrich & Explain with Agent` — hand off grounded context to Cursor/Claude agent
+- `Codegraph: Configure API Provider` — provider dropdown + API key + model presets + connection test
+- `Codegraph: Test API Connection`
+- `Codegraph: Repo Brief` — first-look map of the Python workspace
+- `Codegraph: Set Explain Depth` — short / standard / deep
 - `Codegraph: Find Definition`
 - `Codegraph: Find Usages`
 

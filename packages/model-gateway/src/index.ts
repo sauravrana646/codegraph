@@ -10,6 +10,7 @@ export {
   ENRICHMENT_PROVIDER_PRESETS,
   defaultModelForProvider,
   getEnrichmentProviderPreset,
+  modelPresetsForProvider,
   resolveEnrichmentBaseUrl,
   type EnrichmentProviderId,
   type EnrichmentProviderPreset
@@ -19,6 +20,8 @@ export interface ModelCapabilities {
   streaming: boolean;
   structuredJson: boolean;
 }
+
+export type ExplainDepth = "short" | "standard" | "deep";
 
 export interface ModelRequest {
   system: string;
@@ -55,6 +58,7 @@ export interface EnrichmentOptions {
    */
   trustProviderConfig?: boolean;
   timeoutMs?: number;
+  depth?: ExplainDepth;
 }
 
 export interface EnrichmentMetadata {
@@ -301,7 +305,11 @@ export class OpenAICompatibleProvider implements ModelProvider {
   }
 }
 
-function buildEnrichmentPrompt(context: ContextBundle, explanation: Explanation): ModelRequest {
+function buildEnrichmentPrompt(
+  context: ContextBundle,
+  explanation: Explanation,
+  depth: ExplainDepth = "standard"
+): ModelRequest {
   const definitions =
     context.definitions
       .slice(0, 6)
@@ -323,6 +331,13 @@ function buildEnrichmentPrompt(context: ContextBundle, explanation: Explanation)
     `references:\n${references}`
   ].join("\n");
 
+  const depthGuidance =
+    depth === "short"
+      ? "Keep whyItExists to 2-4 sentences; whatItDoes can be a short bullet list; howItWorks one short note."
+      : depth === "deep"
+        ? "Be thorough: fields table, shapes/examples, validators, nearby module connections, and caveats."
+        : "Use standard tutoring depth: purpose, fields table when useful, notes, and brief usage.";
+
   return {
     system: [
       "You are a calm codebase tutor for Python repositories (learn-codebase style).",
@@ -337,6 +352,7 @@ function buildEnrichmentPrompt(context: ContextBundle, explanation: Explanation)
     user: [
       "TASK:",
       "Using the source window and location index, write the final learn-codebase tutoring card.",
+      `Depth: ${depth}. ${depthGuidance}`,
       "Do NOT dump raw parser/AST/LSP output to the user. Transform into clear tutoring prose.",
       "",
       "OUTPUT MAP:",
@@ -499,7 +515,9 @@ export async function enrichSelectionContext(
             }
           : undefined
     });
-    const response = await provider.generate(buildEnrichmentPrompt(result.context, result.explanation));
+    const response = await provider.generate(
+      buildEnrichmentPrompt(result.context, result.explanation, options?.depth ?? "standard")
+    );
     const enrichment = parseEnrichment(response.text);
 
     return {
@@ -548,9 +566,43 @@ export interface AgentPointerRequest {
   filePath: string;
   line: number;
   selectedText?: string;
+  depth?: ExplainDepth;
 }
 
 export const SLIM_HANDOFF_MARKER = "codegraph-slim-v3";
+
+function answerFormatForDepth(depth: ExplainDepth): string[] {
+  if (depth === "short") {
+    return [
+      "ANSWER FORMAT (short):",
+      "1) One-line location",
+      "2) Purpose in 2-4 sentences",
+      "3) End with: Ask about that, or keep moving."
+    ];
+  }
+  if (depth === "deep") {
+    return [
+      "ANSWER FORMAT (deep):",
+      "1) Location + short code citation",
+      "2) Purpose",
+      "3) Fields table (Field | Meaning) when applicable",
+      "4) Valid shapes / examples",
+      "5) Docstring/validator notes",
+      "6) How it connects to nearby modules",
+      "7) Caveats / edge cases",
+      "8) End with: Ask about that, or keep moving."
+    ];
+  }
+  return [
+    "ANSWER FORMAT (standard):",
+    "1) Location + short code citation",
+    "2) Purpose",
+    "3) Fields table (Field | Meaning) when applicable",
+    "4) Valid shapes / examples when useful",
+    "5) Docstring/validator notes",
+    "6) End with: Ask about that, or keep moving."
+  ];
+}
 
 /**
  * Token-efficient Agent handoff from a pointer only.
@@ -558,6 +610,7 @@ export const SLIM_HANDOFF_MARKER = "codegraph-slim-v3";
  */
 export function buildPointerAgentHandoffPrompt(request: AgentPointerRequest): string {
   const symbol = request.selectedText?.trim() || "(cursor only)";
+  const depth: ExplainDepth = request.depth ?? "standard";
   return [
     SLIM_HANDOFF_MARKER,
     "Codegraph Live Explain — answer in this Agent chat.",
@@ -569,22 +622,112 @@ export function buildPointerAgentHandoffPrompt(request: AgentPointerRequest): st
     `filePath: ${request.filePath}`,
     `line: ${request.line}`,
     `symbol: ${symbol}`,
+    `depth: ${depth}`,
     "",
     "REQUIRED FLOW:",
     "1) Open/read `filePath` around `line` (or call Codegraph `logical_section`).",
     "2) Explain from that source. Optionally call `find_definition` / `find_usages` for file:line locations only.",
     "3) Do not request or rely on AST/LSP context blobs.",
     "",
-    "ANSWER FORMAT:",
-    "1) Location + short code citation",
-    "2) Purpose",
-    "3) Fields table (Field | Meaning) when applicable",
-    "4) Valid shapes / examples when useful",
-    "5) Docstring/validator notes",
-    "6) End with: Ask about that, or keep moving.",
+    ...answerFormatForDepth(depth),
     "",
     "Rules: cite real file:line; never invent files/symbols; keep it concise."
   ].join("\n");
+}
+
+export function buildRepoBriefAgentPrompt(input: {
+  rootPath: string;
+  summaryLines: string[];
+  notableSymbols: Array<{ file: string; line: number; name: string; kind: string }>;
+}): string {
+  return [
+    SLIM_HANDOFF_MARKER,
+    "Codegraph first-time repo brief — answer in this Agent chat.",
+    "Do not ask for API keys.",
+    "Give a calm onboarding map of this Python workspace.",
+    "",
+    `rootPath: ${input.rootPath}`,
+    "",
+    "FACTS:",
+    ...input.summaryLines.map((line) => `- ${line}`),
+    "",
+    "NOTABLE SYMBOLS:",
+    ...input.notableSymbols
+      .slice(0, 16)
+      .map((item) => `- ${item.kind} ${item.name} @ ${item.file}:${item.line}`),
+    "",
+    "Write:",
+    "1) What this repo appears to be",
+    "2) Where to start reading (entrypoints / packages)",
+    "3) 5-8 important symbols with file:line",
+    "4) End with: Ask about a file, or turn on Live Explain and keep moving."
+  ].join("\n");
+}
+
+export interface ProviderConnectionTestResult {
+  ok: boolean;
+  provider: string;
+  model: string;
+  baseUrl: string;
+  latencyMs: number;
+  error?: string;
+  sample?: string;
+}
+
+/** Tiny chat-completions ping to verify API key + model for a provider. */
+export async function testProviderConnection(input: {
+  providerId?: string;
+  apiKey: string;
+  baseUrl?: string;
+  model?: string;
+  timeoutMs?: number;
+}): Promise<ProviderConnectionTestResult> {
+  const preset = getEnrichmentProviderPreset(input.providerId);
+  const baseUrl = resolveEnrichmentBaseUrl(preset.id, input.baseUrl);
+  const model = input.model?.trim() || preset.defaultModel;
+  const started = Date.now();
+
+  try {
+    const provider = new OpenAICompatibleProvider({
+      apiKey: input.apiKey,
+      baseUrl,
+      model,
+      timeoutMs: input.timeoutMs ?? 15_000,
+      allowLocal: true,
+      supportsJsonObject: false,
+      providerLabel: preset.id,
+      extraHeaders:
+        preset.id === "openrouter"
+          ? {
+              "HTTP-Referer": "https://github.com/sauravrana646/codegraph",
+              "X-Title": "Codegraph"
+            }
+          : undefined
+    });
+
+    const response = await provider.generate({
+      system: "Reply with exactly: ok",
+      user: "ping"
+    });
+
+    return {
+      ok: true,
+      provider: preset.id,
+      model,
+      baseUrl,
+      latencyMs: Date.now() - started,
+      sample: response.text.slice(0, 80)
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      provider: preset.id,
+      model,
+      baseUrl,
+      latencyMs: Date.now() - started,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
 }
 
 /** @deprecated Prefer buildPointerAgentHandoffPrompt — ignores AST/LSP payload on purpose. */
