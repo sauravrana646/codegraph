@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import * as path from "node:path";
 
 import { buildSelectionContext } from "@codegraph/core";
 
@@ -14,6 +15,14 @@ function getOutputChannel(): vscode.OutputChannel {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
+  context.subscriptions.push(
+    vscode.window.registerWebviewPanelSerializer("codegraph.explanation", {
+      async deserializeWebviewPanel(webviewPanel: vscode.WebviewPanel): Promise<void> {
+        panel = webviewPanel;
+      }
+    })
+  );
+
   const disposable = vscode.commands.registerCommand("codegraph.explainSelection", async () => {
     const editor = vscode.window.activeTextEditor;
 
@@ -55,9 +64,19 @@ export function activate(context: vscode.ExtensionContext): void {
       "Codegraph Explanation",
       vscode.ViewColumn.Beside,
       {
-        enableFindWidget: true
+        enableFindWidget: true,
+        enableScripts: true
       }
     );
+    if (!panel.webview.html) {
+      panel.webview.onDidReceiveMessage((message) => {
+        if (message?.type !== "openSource") {
+          return;
+        }
+
+        void openSourceLocation(workspaceFolder.uri.fsPath, message.file, message.line);
+      }, undefined, context.subscriptions);
+    }
     panel.title = selectedText ? `Codegraph: ${selectedText}` : `Codegraph: ${filePath}:${line}`;
     panel.webview.html = renderExplanationHtml(filePath, line, result);
     panel.reveal(vscode.ViewColumn.Beside, true);
@@ -82,6 +101,10 @@ function escapeHtml(value: string | undefined): string {
     .replaceAll(">", "&gt;");
 }
 
+function escapeAttribute(value: string | undefined): string {
+  return escapeHtml(value).replaceAll('"', "&quot;").replaceAll("'", "&#39;");
+}
+
 function renderList(items: string[]): string {
   return items.length > 0
     ? `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
@@ -101,7 +124,9 @@ function renderSourceList(
         .map(
           (item) => `
             <li>
-              <strong>${escapeHtml(item.file)}:${item.line}</strong>
+              <button class="source-link" data-file="${escapeAttribute(item.file)}" data-line="${item.line}">
+                ${escapeHtml(item.file)}:${item.line}
+              </button>
               ${item.excerpt ? `<pre>${escapeHtml(item.excerpt)}</pre>` : ""}
             </li>
           `
@@ -153,6 +178,15 @@ function renderExplanationHtml(
         }
         section {
           margin-top: 20px;
+        }
+        .source-link {
+          border: none;
+          background: transparent;
+          color: var(--vscode-textLink-foreground);
+          cursor: pointer;
+          padding: 0;
+          font: inherit;
+          text-decoration: underline;
         }
       </style>
     </head>
@@ -217,6 +251,31 @@ function renderExplanationHtml(
         <h2>Caveats</h2>
         ${renderList(result.explanation.caveats ?? [])}
       </section>
+      <script>
+        const vscode = acquireVsCodeApi();
+        document.querySelectorAll(".source-link").forEach((node) => {
+          node.addEventListener("click", () => {
+            vscode.postMessage({
+              type: "openSource",
+              file: node.getAttribute("data-file"),
+              line: Number(node.getAttribute("data-line") || "1")
+            });
+          });
+        });
+      </script>
     </body>
   </html>`;
+}
+
+async function openSourceLocation(rootPath: string, relativeFilePath: string, line: number): Promise<void> {
+  const uri = vscode.Uri.file(path.join(rootPath, relativeFilePath));
+  const document = await vscode.workspace.openTextDocument(uri);
+  const editor = await vscode.window.showTextDocument(document, {
+    preview: false,
+    preserveFocus: false
+  });
+  const targetLine = Math.max(0, line - 1);
+  const position = new vscode.Position(targetLine, 0);
+  editor.selection = new vscode.Selection(position, position);
+  editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
 }

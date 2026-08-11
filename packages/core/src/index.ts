@@ -45,6 +45,30 @@ export interface SelectionContextResult {
   explanation: Explanation;
 }
 
+export interface LogicalSectionResult {
+  file: string;
+  symbolName?: string;
+  kind: PythonSymbolKind | "text";
+  startLine: number;
+  endLine: number;
+  excerpt: string;
+}
+
+interface SelectionAnalysis {
+  workspace: WorkspaceSummary;
+  file: string;
+  lines: string[];
+  selectedSymbol?: string;
+  workspacePythonFiles: Array<{ file: string; absolutePath: string; content: string }>;
+  workspaceAnalysis: WorkspacePythonAnalysis;
+  localSymbols: PythonSymbol[];
+  containingScopes: PythonSymbol[];
+  definitions: SourceReference[];
+  references: SourceReference[];
+  relatedFiles: SourceReference[];
+  metadata: ResolutionMetadata;
+}
+
 function languageFromFile(filePath: string): string | undefined {
   if (filePath.endsWith(".py")) {
     return "python";
@@ -287,13 +311,12 @@ function buildExplanation(
   };
 }
 
-export async function buildSelectionContext(request: ExplainSelectionRequest): Promise<SelectionContextResult> {
+async function analyzeSelection(request: ExplainSelectionRequest): Promise<SelectionAnalysis> {
   const workspace = createWorkspaceSummary(request.rootPath);
   const absoluteFilePath = normalizeWorkspacePath(workspace.rootPath, request.filePath);
   const file = path.relative(workspace.rootPath, absoluteFilePath);
   const content = await fs.readFile(absoluteFilePath, "utf8");
   const lines = content.split(/\r?\n/);
-  const excerpt = redactSecrets(buildExcerpt(lines, request.line));
   const workspacePythonFiles = await readWorkspacePythonFiles(workspace.rootPath);
   const selectedSymbol = detectSelectedSymbol(lines, request.line, request.selectedText);
   const workspaceAnalysis = await collectWorkspacePythonSymbols(workspacePythonFiles);
@@ -304,46 +327,105 @@ export async function buildSelectionContext(request: ExplainSelectionRequest): P
     ? findSymbolDefinitions(workspaceSymbols, selectedSymbol).map((symbol) =>
         createSourceReference(symbol.file, symbol.line, symbol.excerpt)
       )
-    : [createSourceReference(file, request.line, excerpt)];
+    : [createSourceReference(file, request.line, redactSecrets(buildExcerpt(lines, request.line)))];
   const references = selectedSymbol ? findSymbolReferences(workspacePythonFiles, selectedSymbol) : [];
   const relatedFiles = dedupeReferences(references).map((reference) => ({
     file: reference.file,
     line: reference.line,
     excerpt: reference.excerpt
   }));
-
-  const target: TargetContext = {
-    workspaceId: workspace.id,
-    file,
-    line: request.line,
-    selectedText: selectedSymbol ?? request.selectedText
+  const metadata: ResolutionMetadata = {
+    source: languageFromFile(file) === "python" && workspaceAnalysis.usedAst ? "ast" : "text",
+    capabilityTier: languageFromFile(file) === "python" ? 2 : 0,
+    confidence: selectedSymbol
+      ? definitions.length > 0
+        ? 0.82
+        : 0.46
+      : 0.35
   };
-
-  const capabilityTier = languageFromFile(file) === "python" ? 2 : 0;
-  const confidence = selectedSymbol
-    ? definitions.length > 0
-      ? 0.82
-      : 0.46
-    : 0.35;
-
-  const explanation = buildExplanation(file, request.line, selectedSymbol, definitions, references, containingScopes);
 
   return {
     workspace,
+    file,
+    lines,
+    selectedSymbol,
+    workspacePythonFiles,
+    workspaceAnalysis,
+    localSymbols,
+    containingScopes,
+    definitions,
+    references,
+    relatedFiles,
+    metadata
+  };
+}
+
+export async function findDefinition(request: ExplainSelectionRequest): Promise<SourceReference[]> {
+  const analysis = await analyzeSelection(request);
+
+  return analysis.definitions;
+}
+
+export async function findUsages(request: ExplainSelectionRequest): Promise<SourceReference[]> {
+  const analysis = await analyzeSelection(request);
+
+  return analysis.references;
+}
+
+export async function getLogicalSection(request: ExplainSelectionRequest): Promise<LogicalSectionResult> {
+  const analysis = await analyzeSelection(request);
+  const narrowestScope = analysis.containingScopes[analysis.containingScopes.length - 1];
+
+  if (narrowestScope) {
+    return {
+      file: analysis.file,
+      symbolName: narrowestScope.name,
+      kind: narrowestScope.kind,
+      startLine: narrowestScope.line,
+      endLine: narrowestScope.endLine,
+      excerpt: narrowestScope.excerpt
+    };
+  }
+
+  return {
+    file: analysis.file,
+    kind: "text",
+    startLine: Math.max(1, request.line - 2),
+    endLine: Math.min(analysis.lines.length, request.line + 2),
+    excerpt: redactSecrets(buildExcerpt(analysis.lines, request.line))
+  };
+}
+
+export async function buildSelectionContext(request: ExplainSelectionRequest): Promise<SelectionContextResult> {
+  const analysis = await analyzeSelection(request);
+
+  const target: TargetContext = {
+    workspaceId: analysis.workspace.id,
+    file: analysis.file,
+    line: request.line,
+    selectedText: analysis.selectedSymbol ?? request.selectedText
+  };
+  const explanation = buildExplanation(
+    analysis.file,
+    request.line,
+    analysis.selectedSymbol,
+    analysis.definitions,
+    analysis.references,
+    analysis.containingScopes
+  );
+
+  return {
+    workspace: analysis.workspace,
     context: {
-      workspace,
+      workspace: analysis.workspace,
       target,
-      definitions,
-      references,
-      relatedFiles,
+      definitions: analysis.definitions,
+      references: analysis.references,
+      relatedFiles: analysis.relatedFiles,
       documentation: [],
       configuration: []
     },
-    metadata: {
-      source: languageFromFile(file) === "python" && workspaceAnalysis.usedAst ? "ast" : "text",
-      capabilityTier,
-      confidence
-    },
+    metadata: analysis.metadata,
     explanation
   };
 }

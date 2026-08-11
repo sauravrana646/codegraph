@@ -18,6 +18,7 @@ The repository currently contains the first implementation scaffold:
 - workspace path and identity helpers in `packages/workspace`
 - security primitives for path/symlink checks and secret redaction in `packages/security`
 - deterministic Python explanation assembly in `packages/core`
+- deterministic helpers now include definition lookup, usage lookup, and logical section extraction
 
 ## Architecture rules
 
@@ -31,10 +32,10 @@ The repository currently contains the first implementation scaffold:
 ## Suggested next implementation order
 
 1. Improve logical section resolution beyond current symbol scope handling
-2. Build explicit deterministic tools such as `find_definition`
-3. Improve bounded reference and related-code retrieval
-4. Add provider abstraction and explanation normalization
-5. Expand the VS Code/Cursor extension with source navigation and follow-up UX
+2. Improve bounded reference and related-code retrieval
+3. Add provider abstraction and explanation normalization
+4. Expand the VS Code/Cursor extension with follow-up UX
+5. Expose deterministic functions through a more formal runtime/tool API
 
 ## Useful commands
 

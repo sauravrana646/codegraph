@@ -114,6 +114,7 @@ Current behavior:
 - gathers local selection context
 - performs deterministic Python-aware symbol discovery and bounded reference search
 - opens a side panel with summary, sources, inferred claims, and caveats
+- lets you click cited source locations in the panel to jump back into the editor
 - keeps a raw JSON trace in the `Codegraph` output channel for debugging
 - does not call an LLM yet
 
@@ -152,12 +153,11 @@ This first usable version is intentionally narrow:
 
 The best next engineering tasks are:
 
-1. replace regex-only Python analysis with stronger AST-backed parsing
-2. improve logical section detection and scope resolution
-3. promote deterministic primitives into explicit tools such as `find_definition`
-4. add provider abstraction and structured model-backed explanation generation
-5. add follow-up Code Understanding Sessions
-6. add richer source navigation inside the panel
+1. improve logical section detection and scope resolution
+2. strengthen deterministic reference quality and ranking
+3. add provider abstraction and structured model-backed explanation generation
+4. add follow-up Code Understanding Sessions
+5. expose the deterministic tools through a more formal runtime/tool API
 
 For the full sequence, see:
 
