@@ -11,7 +11,9 @@
   },
   "references": [
     { "path": "../../packages/core" },
-    { "path": "../../packages/model-gateway" }
+    { "path": "../../packages/model-gateway" },
+    { "path": "../../packages/security" },
+    { "path": "../../packages/workspace" }
   ],
   "include": ["src/**/*"]
 }

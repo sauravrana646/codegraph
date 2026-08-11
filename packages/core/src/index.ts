@@ -13,8 +13,8 @@ import type {
   TargetContext,
   WorkspaceSummary
 } from "@codegraph/protocol";
-import { redactSecrets } from "@codegraph/security";
-import { createWorkspaceSummary, normalizeWorkspacePath } from "@codegraph/workspace";
+import { redactSecrets, readContainedFile } from "@codegraph/security";
+import { createWorkspaceSummary } from "@codegraph/workspace";
 
 export interface ExplainSelectionRequest {
   rootPath: string;
@@ -160,10 +160,19 @@ async function walkWorkspaceFiles(rootPath: string, currentDir = rootPath): Prom
       continue;
     }
 
+    // Skip symlink entries so workspace walks cannot escape via linked files/dirs.
+    if (entry.isSymbolicLink()) {
+      continue;
+    }
+
     const absolutePath = path.join(currentDir, entry.name);
 
     if (entry.isDirectory()) {
       files.push(...(await walkWorkspaceFiles(rootPath, absolutePath)));
+      continue;
+    }
+
+    if (!entry.isFile()) {
       continue;
     }
 
@@ -176,14 +185,22 @@ async function walkWorkspaceFiles(rootPath: string, currentDir = rootPath): Prom
 async function readWorkspacePythonFiles(rootPath: string): Promise<Array<{ file: string; absolutePath: string; content: string }>> {
   const files = await walkWorkspaceFiles(rootPath);
   const pythonFiles = files.filter((file) => file.endsWith(".py")).slice(0, 200);
+  const results: Array<{ file: string; absolutePath: string; content: string }> = [];
 
-  return Promise.all(
-    pythonFiles.map(async (file) => ({
-      file,
-      absolutePath: path.join(rootPath, file),
-      content: await fs.readFile(path.join(rootPath, file), "utf8")
-    }))
-  );
+  for (const file of pythonFiles) {
+    try {
+      const contained = await readContainedFile(rootPath, file);
+      results.push({
+        file: contained.relativePath,
+        absolutePath: contained.absolutePath,
+        content: contained.content
+      });
+    } catch {
+      // Skip files that fail containment checks.
+    }
+  }
+
+  return results;
 }
 
 async function collectWorkspacePythonSymbols(
@@ -426,9 +443,9 @@ function buildExplanation(
 
 async function analyzeSelection(request: ExplainSelectionRequest): Promise<SelectionAnalysis> {
   const workspace = createWorkspaceSummary(request.rootPath);
-  const absoluteFilePath = normalizeWorkspacePath(workspace.rootPath, request.filePath);
-  const file = path.relative(workspace.rootPath, absoluteFilePath);
-  const content = await fs.readFile(absoluteFilePath, "utf8");
+  const contained = await readContainedFile(workspace.rootPath, request.filePath);
+  const file = contained.relativePath;
+  const content = contained.content;
   const lines = content.split(/\r?\n/);
   const workspacePythonFiles = await readWorkspacePythonFiles(workspace.rootPath);
   const selectedSymbol = detectSelectedSymbol(lines, request.line, request.selectedText);

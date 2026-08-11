@@ -4,6 +4,8 @@ import * as path from "node:path";
 
 import { buildSelectionContext, findDefinition, findUsages } from "@codegraph/core";
 import { enrichSelectionContext, type EnrichmentMetadata } from "@codegraph/model-gateway";
+import { redactSecrets } from "@codegraph/security";
+import { normalizeWorkspacePath } from "@codegraph/workspace";
 
 type SelectionContext = Awaited<ReturnType<typeof buildSelectionContext>>;
 type EnrichedSelectionContext = SelectionContext & { enrichment?: EnrichmentMetadata };
@@ -189,6 +191,7 @@ async function runExplainSelection(
 
   const result = await enrichSelectionContext(deterministic, {
     enabled: enrichCfg.enabled,
+    trustProviderConfig: true,
     provider: {
       apiKey: enrichCfg.apiKey,
       baseUrl: enrichCfg.baseUrl,
@@ -201,7 +204,23 @@ async function runExplainSelection(
   const channel = getOutputChannel();
   channel.clear();
   channel.appendLine("Codegraph selection context");
-  channel.appendLine(JSON.stringify(result, null, 2));
+  channel.appendLine(
+    redactSecrets(
+      JSON.stringify(
+        {
+          metadata: result.metadata,
+          enrichment: result.enrichment,
+          explanation: {
+            summary: result.explanation.summary,
+            confidence: result.explanation.confidence,
+            sources: result.explanation.sources
+          }
+        },
+        null,
+        2
+      )
+    )
+  );
   channel.appendLine(`enrichment=${enrichmentStatusLabel(result.enrichment)}`);
 
   ensurePanel(context);
@@ -473,7 +492,16 @@ function renderExplanationHtml(
 }
 
 async function openSourceLocation(rootPath: string, relativeFilePath: string, line: number): Promise<void> {
-  const uri = vscode.Uri.file(path.join(rootPath, relativeFilePath));
+  let absolutePath: string;
+
+  try {
+    absolutePath = normalizeWorkspacePath(rootPath, relativeFilePath);
+  } catch {
+    void vscode.window.showWarningMessage("Codegraph refused to open a path outside the workspace.");
+    return;
+  }
+
+  const uri = vscode.Uri.file(absolutePath);
   const document = await vscode.workspace.openTextDocument(uri);
   const editor = await vscode.window.showTextDocument(document, {
     preview: false,

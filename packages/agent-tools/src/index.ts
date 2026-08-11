@@ -15,11 +15,16 @@ export interface ToolRequest {
   selectedText?: string;
   depth?: LogicalSectionDepth;
   enrich?: boolean;
+  /**
+   * Provider overrides are only honored when trustProviderConfig is true
+   * (trusted local callers such as the IDE extension). HTTP/MCP ignore these.
+   */
   provider?: {
     apiKey?: string;
     baseUrl?: string;
     model?: string;
   };
+  trustProviderConfig?: boolean;
 }
 
 function logicalSectionMetadata(confidence: number): ResolutionMetadata {
@@ -40,7 +45,8 @@ export async function runExplainSelectionTool(request: ToolRequest): Promise<Too
 
   const enriched = await enrichSelectionContext(deterministic, {
     enabled: request.enrich,
-    provider: request.provider
+    provider: request.provider,
+    trustProviderConfig: request.trustProviderConfig === true
   });
 
   return toolSuccess(

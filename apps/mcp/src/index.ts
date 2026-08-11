@@ -8,6 +8,7 @@ import {
 } from "@codegraph/agent-tools";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import path from "node:path";
 
 type ToolArgs = ToolRequest;
 
@@ -24,29 +25,43 @@ const toolInputSchema = {
       enum: ["statement", "function", "class", "auto"],
       description: "Logical section depth"
     },
-    enrich: { type: "boolean", description: "Opt-in model enrichment for explain-selection" },
-    provider: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        apiKey: { type: "string" },
-        baseUrl: { type: "string" },
-        model: { type: "string" }
-      }
-    }
+    enrich: { type: "boolean", description: "Opt-in model enrichment for explain-selection" }
   },
   required: ["rootPath", "filePath", "line"]
 } as const;
 
+const ALLOWED_ROOTS = (process.env.CODEGRAPH_ALLOWED_ROOTS ?? "")
+  .split(path.delimiter)
+  .map((value) => value.trim())
+  .filter(Boolean)
+  .map((value) => path.resolve(value));
+
+function assertAllowedRoot(rootPath: string): string {
+  const resolved = path.resolve(rootPath);
+
+  if (ALLOWED_ROOTS.length === 0) {
+    return resolved;
+  }
+
+  const allowed = ALLOWED_ROOTS.some((root) => resolved === root || resolved.startsWith(`${root}${path.sep}`));
+  if (!allowed) {
+    throw new Error("rootPath is not in CODEGRAPH_ALLOWED_ROOTS");
+  }
+
+  return resolved;
+}
+
 function asToolRequest(args: ToolArgs): ToolRequest {
   return {
-    rootPath: args.rootPath,
+    rootPath: assertAllowedRoot(args.rootPath),
     filePath: args.filePath,
     line: args.line,
     selectedText: args.selectedText,
     depth: args.depth,
     enrich: args.enrich,
-    provider: args.provider
+    // MCP callers never supply provider credentials/baseUrl.
+    provider: undefined,
+    trustProviderConfig: false
   };
 }
 
@@ -71,12 +86,42 @@ function parseToolArgs(args: unknown): ToolArgs {
   if (
     typeof candidate.rootPath !== "string" ||
     typeof candidate.filePath !== "string" ||
-    typeof candidate.line !== "number"
+    !Number.isInteger(candidate.line) ||
+    (candidate.line as number) < 1
   ) {
-    throw new Error("Tool arguments require rootPath, filePath, and line");
+    throw new Error("Tool arguments require rootPath, filePath, and integer line >= 1");
   }
 
-  return candidate as ToolArgs;
+  if (path.isAbsolute(candidate.filePath) || candidate.filePath.includes("\0")) {
+    throw new Error("filePath must be a workspace-relative path");
+  }
+
+  if (
+    candidate.depth !== undefined &&
+    candidate.depth !== "statement" &&
+    candidate.depth !== "function" &&
+    candidate.depth !== "class" &&
+    candidate.depth !== "auto"
+  ) {
+    throw new Error("depth must be statement|function|class|auto");
+  }
+
+  if (candidate.selectedText !== undefined && typeof candidate.selectedText !== "string") {
+    throw new Error("selectedText must be a string");
+  }
+
+  if (candidate.enrich !== undefined && typeof candidate.enrich !== "boolean") {
+    throw new Error("enrich must be a boolean");
+  }
+
+  return {
+    rootPath: candidate.rootPath,
+    filePath: candidate.filePath,
+    line: candidate.line as number,
+    selectedText: candidate.selectedText,
+    depth: candidate.depth,
+    enrich: candidate.enrich
+  };
 }
 
 async function main(): Promise<void> {

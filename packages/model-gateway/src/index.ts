@@ -34,6 +34,12 @@ export interface ProviderConfig {
 export interface EnrichmentOptions {
   enabled?: boolean;
   provider?: ProviderConfig;
+  /**
+   * When false (default for remote/HTTP callers), ignore request-provided
+   * apiKey/baseUrl and only use environment / trusted local settings.
+   */
+  trustProviderConfig?: boolean;
+  timeoutMs?: number;
 }
 
 export interface EnrichmentMetadata {
@@ -60,22 +66,92 @@ interface StructuredEnrichment {
   caveats?: string[];
 }
 
-function resolveConfig(options?: EnrichmentOptions): Required<ProviderConfig> & { enabled: boolean } {
-  const apiKey = options?.provider?.apiKey ?? process.env.CODEGRAPH_API_KEY ?? process.env.OPENAI_API_KEY;
-  const baseUrl =
-    options?.provider?.baseUrl ??
-    process.env.CODEGRAPH_BASE_URL ??
-    process.env.OPENAI_BASE_URL ??
-    "https://api.openai.com/v1";
-  const model = options?.provider?.model ?? process.env.CODEGRAPH_MODEL ?? "gpt-4o-mini";
+const DEFAULT_BASE_URL = "https://api.openai.com/v1";
+const DEFAULT_TIMEOUT_MS = 20_000;
+
+const BLOCKED_HOST_PATTERNS = [
+  /^localhost$/i,
+  /^127\./,
+  /^10\./,
+  /^192\.168\./,
+  /^169\.254\./,
+  /^0\.0\.0\.0$/,
+  /^\[::1\]$/,
+  /^::1$/,
+  /^metadata\.google\.internal$/i
+];
+
+function isPrivateOrLocalHost(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, "");
+
+  if (BLOCKED_HOST_PATTERNS.some((pattern) => pattern.test(host))) {
+    return true;
+  }
+
+  // 172.16.0.0 – 172.31.255.255
+  const match = host.match(/^172\.(\d+)\./);
+  if (match) {
+    const second = Number(match[1]);
+    if (second >= 16 && second <= 31) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+export function assertSafeProviderBaseUrl(baseUrl: string, options?: { allowLocal?: boolean }): string {
+  let parsed: URL;
+
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    throw new Error("Invalid provider base URL");
+  }
+
+  const allowLocal = options?.allowLocal === true;
+  const isLocal = isPrivateOrLocalHost(parsed.hostname);
+
+  if (allowLocal && isLocal) {
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      throw new Error("Local provider base URL must use HTTP or HTTPS");
+    }
+
+    return parsed.toString().replace(/\/$/, "");
+  }
+
+  if (parsed.protocol !== "https:") {
+    throw new Error("Provider base URL must use HTTPS");
+  }
+
+  if (isLocal) {
+    throw new Error("Provider base URL must not target private or link-local hosts");
+  }
+
+  return parsed.toString().replace(/\/$/, "");
+}
+
+function resolveConfig(options?: EnrichmentOptions): Required<ProviderConfig> & { enabled: boolean; timeoutMs: number } {
+  const trustProvider = options?.trustProviderConfig === true;
+  const envApiKey = process.env.CODEGRAPH_API_KEY ?? process.env.OPENAI_API_KEY;
+  const envBaseUrl = process.env.CODEGRAPH_BASE_URL ?? process.env.OPENAI_BASE_URL ?? DEFAULT_BASE_URL;
+  const envModel = process.env.CODEGRAPH_MODEL ?? "gpt-4o-mini";
+
+  // Never mix a client-supplied baseUrl with env credentials.
+  const apiKey = trustProvider ? options?.provider?.apiKey ?? envApiKey : envApiKey;
+  const rawBaseUrl = trustProvider ? options?.provider?.baseUrl ?? envBaseUrl : envBaseUrl;
+  const model = trustProvider ? options?.provider?.model ?? envModel : options?.provider?.model ?? envModel;
+
   const enabledByEnv = process.env.CODEGRAPH_ENRICH === "1" || process.env.CODEGRAPH_ENRICH === "true";
   const enabled = options?.enabled === true || (options?.enabled === undefined && enabledByEnv);
+  const baseUrl = assertSafeProviderBaseUrl(rawBaseUrl, { allowLocal: trustProvider });
 
   return {
     enabled: Boolean(enabled && apiKey),
     apiKey: apiKey ?? "",
-    baseUrl: baseUrl.replace(/\/$/, ""),
-    model
+    baseUrl,
+    model,
+    timeoutMs: options?.timeoutMs ?? DEFAULT_TIMEOUT_MS
   };
 }
 
@@ -83,11 +159,18 @@ export class OpenAICompatibleProvider implements ModelProvider {
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly modelName: string;
+  private readonly timeoutMs: number;
 
-  constructor(config: Required<Pick<ProviderConfig, "apiKey" | "baseUrl" | "model">>) {
+  constructor(
+    config: Required<Pick<ProviderConfig, "apiKey" | "baseUrl" | "model">> & {
+      timeoutMs?: number;
+      allowLocal?: boolean;
+    }
+  ) {
     this.apiKey = config.apiKey;
-    this.baseUrl = config.baseUrl;
+    this.baseUrl = assertSafeProviderBaseUrl(config.baseUrl, { allowLocal: config.allowLocal });
     this.modelName = config.model;
+    this.timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
   id(): string {
@@ -106,42 +189,55 @@ export class OpenAICompatibleProvider implements ModelProvider {
   }
 
   async generate(request: ModelRequest): Promise<ModelResponse> {
-    const response = await fetch(`${this.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${this.apiKey}`
-      },
-      body: JSON.stringify({
-        model: this.modelName,
-        temperature: 0.2,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: request.system },
-          { role: "user", content: request.user }
-        ]
-      })
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
 
-    if (!response.ok) {
-      const errorBody = await response.text();
-      throw new Error(`Provider request failed (${response.status}): ${errorBody.slice(0, 400)}`);
+    try {
+      const response = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${this.apiKey}`
+        },
+        body: JSON.stringify({
+          model: this.modelName,
+          temperature: 0.2,
+          response_format: { type: "json_object" },
+          messages: [
+            { role: "system", content: request.system },
+            { role: "user", content: request.user }
+          ]
+        }),
+        signal: controller.signal
+      });
+
+      if (!response.ok) {
+        throw new Error(`Provider request failed (${response.status})`);
+      }
+
+      const payload = (await response.json()) as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      const text = payload.choices?.[0]?.message?.content;
+
+      if (!text) {
+        throw new Error("Provider returned an empty response");
+      }
+
+      return {
+        text,
+        provider: this.id(),
+        model: this.modelName
+      };
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new Error("Provider request timed out");
+      }
+
+      throw error;
+    } finally {
+      clearTimeout(timer);
     }
-
-    const payload = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    const text = payload.choices?.[0]?.message?.content;
-
-    if (!text) {
-      throw new Error("Provider returned an empty response");
-    }
-
-    return {
-      text,
-      provider: this.id(),
-      model: this.modelName
-    };
   }
 }
 
@@ -152,6 +248,19 @@ function formatSource(reference: { file: string; line: number; excerpt?: string 
 function buildEnrichmentPrompt(context: ContextBundle, explanation: Explanation): ModelRequest {
   const definitions = context.definitions.map(formatSource).join("\n\n") || "None";
   const references = context.references.map(formatSource).join("\n\n") || "None";
+  const untrustedExplanation = JSON.stringify(
+    {
+      summary: explanation.summary,
+      whatItDoes: explanation.whatItDoes,
+      howItWorks: explanation.howItWorks,
+      whyItExists: explanation.whyItExists,
+      codebaseUsage: explanation.codebaseUsage,
+      caveats: explanation.caveats,
+      confidence: explanation.confidence
+    },
+    null,
+    2
+  );
 
   return {
     system: [
@@ -168,22 +277,14 @@ function buildEnrichmentPrompt(context: ContextBundle, explanation: Explanation)
       "Improve the narrative explanation of a Python code selection using only the provided deterministic context.",
       "",
       "TARGET:",
+      "<untrusted_repository_content>",
       JSON.stringify(context.target, null, 2),
+      "</untrusted_repository_content>",
       "",
       "DETERMINISTIC_EXPLANATION:",
-      JSON.stringify(
-        {
-          summary: explanation.summary,
-          whatItDoes: explanation.whatItDoes,
-          howItWorks: explanation.howItWorks,
-          whyItExists: explanation.whyItExists,
-          codebaseUsage: explanation.codebaseUsage,
-          caveats: explanation.caveats,
-          confidence: explanation.confidence
-        },
-        null,
-        2
-      ),
+      "<untrusted_repository_content>",
+      untrustedExplanation,
+      "</untrusted_repository_content>",
       "",
       "DEFINITIONS:",
       "<untrusted_repository_content>",
@@ -243,11 +344,31 @@ function mergeExplanation(base: Explanation, enrichment: StructuredEnrichment): 
   };
 }
 
+function sanitizeEnrichmentError(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return "Unknown enrichment error";
+  }
+
+  const message = error.message;
+
+  if (
+    message.includes("Provider base URL") ||
+    message.includes("timed out") ||
+    message.includes("not configured") ||
+    message.includes("not requested") ||
+    message.includes("Provider request failed") ||
+    message.includes("empty response")
+  ) {
+    return message;
+  }
+
+  return "Enrichment request failed";
+}
+
 export async function enrichSelectionContext(
   result: SelectionContextResultLike,
   options?: EnrichmentOptions
 ): Promise<EnrichedSelectionContext> {
-  const config = resolveConfig(options);
   const requested =
     options?.enabled === true ||
     process.env.CODEGRAPH_ENRICH === "1" ||
@@ -259,6 +380,20 @@ export async function enrichSelectionContext(
       enrichment: {
         used: false,
         error: "Enrichment not requested. Pass enrich:true or set CODEGRAPH_ENRICH=1 with CODEGRAPH_API_KEY/OPENAI_API_KEY"
+      }
+    };
+  }
+
+  let config: ReturnType<typeof resolveConfig>;
+
+  try {
+    config = resolveConfig(options);
+  } catch (error) {
+    return {
+      ...result,
+      enrichment: {
+        used: false,
+        error: sanitizeEnrichmentError(error)
       }
     };
   }
@@ -277,7 +412,9 @@ export async function enrichSelectionContext(
     const provider = new OpenAICompatibleProvider({
       apiKey: config.apiKey,
       baseUrl: config.baseUrl,
-      model: config.model
+      model: config.model,
+      timeoutMs: config.timeoutMs,
+      allowLocal: options?.trustProviderConfig === true
     });
     const response = await provider.generate(buildEnrichmentPrompt(result.context, result.explanation));
     const enrichment = parseEnrichment(response.text);
@@ -298,7 +435,7 @@ export async function enrichSelectionContext(
         used: false,
         provider: "openai-compatible",
         model: config.model,
-        error: error instanceof Error ? error.message : "Unknown enrichment error"
+        error: sanitizeEnrichmentError(error)
       }
     };
   }

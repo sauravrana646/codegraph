@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import http from "node:http";
+import path from "node:path";
 
 import {
   runExplainSelectionTool,
@@ -30,10 +31,32 @@ interface RuntimeSession {
 }
 
 const SESSION_TTL_MS = 30 * 60 * 1000;
+const MAX_SESSIONS = 100;
+const MAX_BODY_BYTES = 1_000_000;
 const sessions = new Map<string, RuntimeSession>();
+
+const AUTH_TOKEN = process.env.CODEGRAPH_RUNTIME_TOKEN?.trim() || undefined;
+const ALLOWED_ROOTS = (process.env.CODEGRAPH_ALLOWED_ROOTS ?? "")
+  .split(path.delimiter)
+  .map((value) => value.trim())
+  .filter(Boolean)
+  .map((value) => path.resolve(value));
 
 function isLogicalSectionDepth(value: unknown): value is LogicalSectionDepth {
   return value === "statement" || value === "function" || value === "class" || value === "auto";
+}
+
+function isProviderObject(value: unknown): value is NonNullable<ToolRequest["provider"]> {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  return (
+    (candidate.apiKey === undefined || typeof candidate.apiKey === "string") &&
+    (candidate.baseUrl === undefined || typeof candidate.baseUrl === "string") &&
+    (candidate.model === undefined || typeof candidate.model === "string")
+  );
 }
 
 function isRuntimeRequestBody(value: unknown): value is RuntimeRequestBody {
@@ -45,11 +68,14 @@ function isRuntimeRequestBody(value: unknown): value is RuntimeRequestBody {
   return (
     typeof candidate.rootPath === "string" &&
     typeof candidate.filePath === "string" &&
-    typeof candidate.line === "number" &&
+    Number.isInteger(candidate.line) &&
+    (candidate.line as number) >= 1 &&
     (candidate.selectedText === undefined || typeof candidate.selectedText === "string") &&
     (candidate.depth === undefined || isLogicalSectionDepth(candidate.depth)) &&
     (candidate.enrich === undefined || typeof candidate.enrich === "boolean") &&
-    (candidate.provider === undefined || typeof candidate.provider === "object")
+    (candidate.provider === undefined || isProviderObject(candidate.provider)) &&
+    !path.isAbsolute(candidate.filePath) &&
+    !candidate.filePath.includes("\0")
   );
 }
 
@@ -74,16 +100,87 @@ function printUsage(): void {
     [
       "Usage:",
       "  codegraph-runtime explain <workspace-root> <file-path> <line> [selectedText]",
-      "  codegraph-runtime serve [port]"
+      "  codegraph-runtime serve [port]",
+      "",
+      "Security env:",
+      "  CODEGRAPH_RUNTIME_TOKEN   Optional bearer token required for HTTP API",
+      "  CODEGRAPH_ALLOWED_ROOTS   Optional path-delimiter list of allowed workspace roots"
     ].join("\n")
   );
 }
 
+function tokensEqual(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+
+  if (leftBuffer.length !== rightBuffer.length) {
+    return false;
+  }
+
+  return timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function isAuthorized(request: http.IncomingMessage): boolean {
+  if (!AUTH_TOKEN) {
+    return true;
+  }
+
+  const header = request.headers.authorization;
+  if (typeof header === "string" && header.startsWith("Bearer ")) {
+    return tokensEqual(header.slice("Bearer ".length), AUTH_TOKEN);
+  }
+
+  const alt = request.headers["x-codegraph-token"];
+  if (typeof alt === "string") {
+    return tokensEqual(alt, AUTH_TOKEN);
+  }
+
+  return false;
+}
+
+function assertAllowedRoot(rootPath: string): string {
+  const resolved = path.resolve(rootPath);
+
+  if (ALLOWED_ROOTS.length === 0) {
+    return resolved;
+  }
+
+  const allowed = ALLOWED_ROOTS.some((root) => resolved === root || resolved.startsWith(`${root}${path.sep}`));
+
+  if (!allowed) {
+    throw new Error("rootPath is not in CODEGRAPH_ALLOWED_ROOTS");
+  }
+
+  return resolved;
+}
+
+function sanitizeRemoteRequest(request: RuntimeRequestBody): RuntimeRequestBody {
+  return {
+    rootPath: assertAllowedRoot(request.rootPath),
+    filePath: request.filePath,
+    line: request.line,
+    selectedText: request.selectedText,
+    depth: request.depth,
+    enrich: request.enrich,
+    // Never honor client-supplied provider credentials/baseUrl over HTTP.
+    provider: undefined,
+    trustProviderConfig: false
+  };
+}
+
 async function readJsonBody(request: http.IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
+  let total = 0;
 
   for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buffer.length;
+
+    if (total > MAX_BODY_BYTES) {
+      throw new Error(`Request body exceeds ${MAX_BODY_BYTES} bytes`);
+    }
+
+    chunks.push(buffer);
   }
 
   const bodyText = Buffer.concat(chunks).toString("utf8");
@@ -103,9 +200,18 @@ function pruneExpiredSessions(): void {
       sessions.delete(sessionId);
     }
   }
+
+  while (sessions.size > MAX_SESSIONS) {
+    const oldest = sessions.keys().next().value;
+    if (!oldest) {
+      break;
+    }
+    sessions.delete(oldest);
+  }
 }
 
 function createSession(request: RuntimeRequestBody): RuntimeSession {
+  pruneExpiredSessions();
   const now = Date.now();
   const session: RuntimeSession = {
     sessionId: randomUUID(),
@@ -121,15 +227,23 @@ function mergeRequest(
   baseRequest: RuntimeRequestBody,
   overrides?: Partial<RuntimeRequestBody>
 ): RuntimeRequestBody {
-  return {
-    rootPath: overrides?.rootPath ?? baseRequest.rootPath,
+  // Freeze workspace root for the session lifetime.
+  const merged: RuntimeRequestBody = {
+    rootPath: baseRequest.rootPath,
     filePath: overrides?.filePath ?? baseRequest.filePath,
     line: overrides?.line ?? baseRequest.line,
     selectedText: overrides?.selectedText ?? baseRequest.selectedText,
     depth: overrides?.depth ?? baseRequest.depth,
     enrich: overrides?.enrich ?? baseRequest.enrich,
-    provider: overrides?.provider ?? baseRequest.provider
+    provider: undefined,
+    trustProviderConfig: false
   };
+
+  if (!isRuntimeRequestBody(merged)) {
+    throw new Error("Invalid session requestOverrides");
+  }
+
+  return sanitizeRemoteRequest(merged);
 }
 
 function withSession(
@@ -169,9 +283,15 @@ async function handleToolRequest(
         data: {
           service: "codegraph-runtime",
           activeSessions: sessions.size,
-          enrichmentConfigured: Boolean(process.env.CODEGRAPH_API_KEY || process.env.OPENAI_API_KEY)
+          authRequired: Boolean(AUTH_TOKEN),
+          allowedRootsConfigured: ALLOWED_ROOTS.length > 0
         }
       });
+      return;
+    }
+
+    if (!isAuthorized(request)) {
+      writeJson(response, 401, toolError("unauthorized", "Missing or invalid runtime token"));
       return;
     }
 
@@ -189,15 +309,16 @@ async function handleToolRequest(
           400,
           toolError(
             "invalid_request",
-            "Invalid request body. Expected { rootPath, filePath, line, selectedText?, depth?, enrich?, provider? }",
+            "Invalid request body. Expected { rootPath, filePath, line>=1, selectedText?, depth?, enrich? }",
             "sessions.explain-selection"
           )
         );
         return;
       }
 
-      const session = createSession(payload);
-      const result = await runExplainSelectionTool(payload);
+      const sanitized = sanitizeRemoteRequest(payload);
+      const session = createSession(sanitized);
+      const result = await runExplainSelectionTool(sanitized);
       writeJson(response, 200, withSession("sessions.explain-selection", session, result));
       return;
     }
@@ -227,7 +348,21 @@ async function handleToolRequest(
         return;
       }
 
-      session.request = mergeRequest(session.request, payload.requestOverrides);
+      try {
+        session.request = mergeRequest(session.request, payload.requestOverrides);
+      } catch (error) {
+        writeJson(
+          response,
+          400,
+          toolError(
+            "invalid_request",
+            error instanceof Error ? error.message : "Invalid session requestOverrides",
+            "sessions.followup"
+          )
+        );
+        return;
+      }
+
       session.updatedAt = Date.now();
 
       const result = await runNamedTool(payload.action, session.request);
@@ -241,39 +376,46 @@ async function handleToolRequest(
         400,
         toolError(
           "invalid_request",
-          "Invalid request body. Expected { rootPath, filePath, line, selectedText?, depth?, enrich?, provider? }"
+          "Invalid request body. Expected { rootPath, filePath, line>=1, selectedText?, depth?, enrich? }"
         )
       );
       return;
     }
 
+    const sanitized = sanitizeRemoteRequest(payload);
+
     if (request.url === "/v1/tools/explain-selection") {
-      writeJson(response, 200, await runExplainSelectionTool(payload));
+      writeJson(response, 200, await runExplainSelectionTool(sanitized));
       return;
     }
 
     if (request.url === "/v1/tools/find-definition") {
-      writeJson(response, 200, await runFindDefinitionTool(payload));
+      writeJson(response, 200, await runFindDefinitionTool(sanitized));
       return;
     }
 
     if (request.url === "/v1/tools/find-usages") {
-      writeJson(response, 200, await runFindUsagesTool(payload));
+      writeJson(response, 200, await runFindUsagesTool(sanitized));
       return;
     }
 
     if (request.url === "/v1/tools/logical-section") {
-      writeJson(response, 200, await runLogicalSectionTool(payload));
+      writeJson(response, 200, await runLogicalSectionTool(sanitized));
       return;
     }
 
     writeJson(response, 404, toolError("unknown_endpoint", "Unknown endpoint"));
   } catch (error) {
-    writeJson(
-      response,
-      500,
-      toolError("runtime_error", error instanceof Error ? error.message : "Unknown runtime error")
-    );
+    const message = error instanceof Error ? error.message : "Unknown runtime error";
+    const status =
+      message.includes("CODEGRAPH_ALLOWED_ROOTS") ||
+      message.includes("Path escapes") ||
+      message.includes("Symlink escapes") ||
+      message.includes("Request body exceeds")
+        ? 400
+        : 500;
+
+    writeJson(response, status, toolError(status === 400 ? "invalid_request" : "runtime_error", message));
   }
 }
 
@@ -295,11 +437,12 @@ async function runExplainCommand(args: string[]): Promise<void> {
   }
 
   const result = await runExplainSelectionTool({
-    rootPath,
+    rootPath: assertAllowedRoot(rootPath),
     filePath,
     line,
     selectedText: selectedTextParts.join(" ") || undefined,
-    enrich: process.env.CODEGRAPH_ENRICH === "1" || process.env.CODEGRAPH_ENRICH === "true"
+    enrich: process.env.CODEGRAPH_ENRICH === "1" || process.env.CODEGRAPH_ENRICH === "true",
+    trustProviderConfig: false
   });
 
   console.log(JSON.stringify(result, null, 2));
@@ -315,6 +458,9 @@ async function runServerCommand(args: string[]): Promise<void> {
     return;
   }
 
+  const pruneTimer = setInterval(() => pruneExpiredSessions(), 60_000);
+  pruneTimer.unref();
+
   const server = http.createServer((request, response) => {
     void handleToolRequest(request, response);
   });
@@ -324,6 +470,14 @@ async function runServerCommand(args: string[]): Promise<void> {
   });
 
   console.log(`Codegraph runtime listening on http://127.0.0.1:${port}`);
+  if (AUTH_TOKEN) {
+    console.log("Runtime token auth enabled (CODEGRAPH_RUNTIME_TOKEN)");
+  } else {
+    console.log("Warning: CODEGRAPH_RUNTIME_TOKEN is unset; local HTTP API is unauthenticated");
+  }
+  if (ALLOWED_ROOTS.length > 0) {
+    console.log(`Allowed roots: ${ALLOWED_ROOTS.join(", ")}`);
+  }
 }
 
 async function main(): Promise<void> {
