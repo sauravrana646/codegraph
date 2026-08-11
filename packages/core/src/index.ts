@@ -346,6 +346,43 @@ function scoreReference(kind: ReferenceKind, sameFile: boolean): number {
   return kindScore[kind] + (sameFile ? 5 : 0);
 }
 
+/** Names that text-grep into noise if used for Jump usages. */
+const NOISE_SYMBOL_NAMES = new Set([
+  "self",
+  "cls",
+  "args",
+  "kwargs",
+  "data",
+  "value",
+  "values",
+  "item",
+  "items",
+  "key",
+  "keys",
+  "result",
+  "results",
+  "error",
+  "errors",
+  "msg",
+  "message",
+  "path",
+  "name",
+  "type",
+  "id",
+  "obj",
+  "config",
+  "options",
+  "params",
+  "status",
+  "state",
+  "count",
+  "index",
+  "line",
+  "file",
+  "text",
+  "content"
+]);
+
 function findSymbolReferences(
   files: Array<{ file: string; content: string }>,
   symbolName: string,
@@ -353,6 +390,11 @@ function findSymbolReferences(
   originFile: string,
   limit = 8
 ): SourceReference[] {
+  // Too-short / ultra-common names produce "random" Jump lines via text scan.
+  if (symbolName.length < 3 || NOISE_SYMBOL_NAMES.has(symbolName)) {
+    return [];
+  }
+
   const pattern = new RegExp(`\\b${escapeForRegex(symbolName)}\\b`);
   const definitionKeys = new Set(definitions.map((definition) => `${definition.file}:${definition.line}`));
   const references: SourceReference[] = [];
@@ -375,6 +417,12 @@ function findSymbolReferences(
         continue;
       }
 
+      // Skip bare mentions when the line is only a comment/string-ish noise heuristic:
+      // prefer structured refs (import / call / attribute) for Jump quality.
+      if (kind === "mention" && /^\s*#/.test(line)) {
+        continue;
+      }
+
       references.push(
         createSourceReference(
           file,
@@ -387,9 +435,17 @@ function findSymbolReferences(
     }
   }
 
-  return dedupeReferences(references)
-    .sort((left, right) => (right.score ?? 0) - (left.score ?? 0))
-    .slice(0, limit);
+  const deduped = dedupeReferences(references).sort(
+    (left, right) => (right.score ?? 0) - (left.score ?? 0)
+  );
+  const strong = deduped.filter(
+    (item) => item.kind === "call" || item.kind === "import" || item.kind === "attribute"
+  );
+  // Prefer import/call/attribute. Fall back to a few mentions only if nothing stronger exists.
+  if (strong.length > 0) {
+    return strong.slice(0, limit);
+  }
+  return deduped.filter((item) => item.kind === "mention").slice(0, Math.min(3, limit));
 }
 
 function dedupeReferences(references: SourceReference[]): SourceReference[] {

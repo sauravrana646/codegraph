@@ -634,12 +634,20 @@ function getActiveRequest(options?: { quiet?: boolean }):
   }
 
   const selection = editor.selection;
+  const selected = editor.document.getText(selection).trim();
+  // Live Explain usually has an empty selection — use the identifier under the cursor
+  // so Jump searches that symbol, not the first token on the line (which looks "random").
+  const wordRange =
+    selected.length === 0
+      ? editor.document.getWordRangeAtPosition(selection.active, /[A-Za-z_][A-Za-z0-9_]*/)
+      : undefined;
+  const wordUnderCursor = wordRange ? editor.document.getText(wordRange).trim() : "";
 
   return {
     rootPath: workspaceFolder.uri.fsPath,
     filePath: vscode.workspace.asRelativePath(editor.document.uri, false),
     line: selection.active.line + 1,
-    selectedText: editor.document.getText(selection).trim() || undefined
+    selectedText: selected || wordUnderCursor || undefined
   };
 }
 
@@ -1686,17 +1694,22 @@ function renderExplanationHtml(
   const resolution = `${result.metadata.source} · tier ${result.metadata.capabilityTier}`;
   const logoUri = options?.logoUri;
   const depth = explainDepthSetting();
-  const definitions = (result.context.definitions?.length
-    ? result.context.definitions
-    : result.explanation.sources.filter((source) => source.kind === "definition")
-  ).slice(0, 8);
-  const usages = (result.context.references?.length
-    ? result.context.references
-    : result.explanation.sources.filter((source) => source.kind !== "definition")
-  ).slice(0, 10);
+  const jumpSymbol =
+    result.context.target.selectedText?.trim() ||
+    result.explanation.summary?.split("@")[0]?.trim() ||
+    "";
+  // Definitions: only real def/class sites (ignore cursor-line "mention" fallbacks).
+  const definitions = (result.context.definitions ?? [])
+    .filter((item) => item.kind === "definition")
+    .slice(0, 8);
+  // Usages: prefer import/call/attribute; mentions are last-resort in core already.
+  const usages = (result.context.references ?? [])
+    .filter((item) => item.kind !== "definition")
+    .slice(0, 10);
 
   const jumpList = `
-      <h2>Jump</h2>
+      <h2>Jump${jumpSymbol ? ` · <code>${escapeHtml(jumpSymbol)}</code>` : ""}</h2>
+      <p class="muted">Text scan for this name (imports / calls / attributes). Not full LSP.</p>
       <div class="jump">
         <div>
           <div class="jump-label">Definitions</div>
@@ -1708,7 +1721,7 @@ function renderExplanationHtml(
                       `<li><button class="source-link" data-file="${escapeAttribute(item.file)}" data-line="${item.line}">${escapeHtml(shortFileLabel(item.file))}:${item.line}</button></li>`
                   )
                   .join("")}</ul>`
-              : `<p class="muted">None yet · <button data-action="findDefinition">Find definition</button></p>`
+              : `<p class="muted">No def/class found for this name · <button data-action="findDefinition">Find definition</button></p>`
           }
         </div>
         <div>
@@ -1718,10 +1731,10 @@ function renderExplanationHtml(
               ? `<ul class="jump-list">${usages
                   .map(
                     (item) =>
-                      `<li><button class="source-link" data-file="${escapeAttribute(item.file)}" data-line="${item.line}">${escapeHtml(shortFileLabel(item.file))}:${item.line}</button></li>`
+                      `<li><button class="source-link" data-file="${escapeAttribute(item.file)}" data-line="${item.line}"><span class="muted">${escapeHtml(item.kind ?? "ref")}</span> ${escapeHtml(shortFileLabel(item.file))}:${item.line}</button></li>`
                   )
                   .join("")}</ul>`
-              : `<p class="muted">None yet · <button data-action="findUsages">Find usages</button></p>`
+              : `<p class="muted">No import/call/attr hits · <button data-action="findUsages">Find usages</button></p>`
           }
         </div>
       </div>
