@@ -92,12 +92,12 @@
         "codegraph.modelAccess.useBuiltInAgent": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Use **built-in Cursor/Claude agent** for generative enrichment when you explicitly ask. Live Explain itself stays in-panel (deterministic) so it can update continuously without opening chat on every cursor move."
+          "markdownDescription": "Use **built-in Cursor/Claude agent** for generative enrichment. Live Explain fills the same sections (summary, what it does, purpose/use, how, usages) via the agent bridge/watcher."
         },
         "codegraph.modelAccess.useApiKeyProvider": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Use an **API key provider** for in-panel enrichment (including during Live Explain if enabled)."
+          "markdownDescription": "Use an **API key provider** for in-panel enrichment of the same sections during Live Explain and one-shot Explain."
         },
         "codegraph.modelAccess.autoEnrichOnExplain": {
           "type": "boolean",
