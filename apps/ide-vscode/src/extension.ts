@@ -1268,6 +1268,8 @@ async function runExplainSelection(
       return;
     }
 
+    const groundedRelated = grounded.explanation.relatedCode ?? [];
+    const handoffRelated = handoff.explanation.relatedCode ?? [];
     const result: EnrichedSelectionContext = {
       ...handoff,
       context: {
@@ -1283,9 +1285,7 @@ async function runExplainSelection(
         sources: grounded.explanation.sources.length
           ? grounded.explanation.sources
           : handoff.explanation.sources,
-        relatedCode: (grounded.explanation.relatedCode?.length
-          ? grounded.explanation.relatedCode
-          : handoff.explanation.relatedCode) ?? []
+        relatedCode: groundedRelated.length ? groundedRelated : handoffRelated
       },
       metadata: grounded.metadata,
       enrichment: {
