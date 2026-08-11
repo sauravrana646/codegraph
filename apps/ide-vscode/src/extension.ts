@@ -25,6 +25,7 @@ import { normalizeWorkspacePath } from "@codegraph/workspace";
 
 import { captureEditorState, setLiveBridgeEnabled } from "./liveBridge";
 import { autoSendToCursorAgent } from "./agentHandoff";
+import { CodegraphSidebarProvider } from "./sidebarView";
 
 type SelectionContext = Awaited<ReturnType<typeof buildSelectionContext>>;
 type EnrichedSelectionContext = GatewayEnrichedSelectionContext;
@@ -41,10 +42,8 @@ interface CodeUnderstandingSession {
 }
 
 let outputChannel: vscode.OutputChannel | undefined;
-let panel: vscode.WebviewPanel | undefined;
+let sidebarProvider: CodegraphSidebarProvider | undefined;
 let currentSession: CodeUnderstandingSession | undefined;
-let panelResurrectTimers: ReturnType<typeof setTimeout>[] = [];
-let panelMessageHooked = false;
 let liveExplainEnabled = false;
 let liveExplainStatusBar: vscode.StatusBarItem | undefined;
 let explainDepthStatusBar: vscode.StatusBarItem | undefined;
@@ -221,12 +220,15 @@ async function setLiveExplainEnabled(enabled: boolean, announce = true): Promise
       // Always hand off in agent mode — this was previously false and blocked all Live Agent sends.
       void runExplainSelection(extensionContext, request, { live: true, handOffAgent: true });
     }
-  } else if (panel && currentSession) {
-    panel.webview.html = renderExplanationHtml(
-      currentSession.request.filePath,
-      currentSession.request.line,
-      currentSession.result,
-      { logoUri: extensionIconWebviewUri(panel.webview) }
+  } else if (sidebarProvider && currentSession) {
+    const webview = sidebarProvider.webview;
+    sidebarProvider.setHtml(
+      renderExplanationHtml(
+        currentSession.request.filePath,
+        currentSession.request.line,
+        currentSession.result,
+        { logoUri: webview ? extensionIconWebviewUri(webview) : undefined }
+      )
     );
   }
 }
@@ -303,6 +305,15 @@ export function activate(context: vscode.ExtensionContext): void {
     : monorepoParser;
 
   logCodegraph(`Activated. parser=${process.env.CODEGRAPH_PYTHON_PARSER}`, true);
+
+  sidebarProvider = new CodegraphSidebarProvider(context.extensionUri, (message) => {
+    void handlePanelMessage(message);
+  });
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(CodegraphSidebarProvider.viewType, sidebarProvider, {
+      webviewOptions: { retainContextWhenHidden: true }
+    })
+  );
 
   // Left + high priority so Cursor's crowded right status bar cannot hide these.
   liveExplainStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 1000);
@@ -496,6 +507,21 @@ export function activate(context: vscode.ExtensionContext): void {
     void vscode.window.showInformationMessage(`Explain depth: ${picked.label}`);
   });
 
+  const showSidebarCommand = vscode.commands.registerCommand("codegraph.showSidebar", async () => {
+    await sidebarProvider?.reveal(false);
+    if (currentSession && sidebarProvider) {
+      const webview = sidebarProvider.webview;
+      sidebarProvider.setHtml(
+        renderExplanationHtml(
+          currentSession.request.filePath,
+          currentSession.request.line,
+          currentSession.result,
+          { logoUri: webview ? extensionIconWebviewUri(webview) : undefined }
+        )
+      );
+    }
+  });
+
   const configListener = vscode.workspace.onDidChangeConfiguration(async (event) => {
     if (event.affectsConfiguration("codegraph.explain.depth")) {
       updateExplainDepthStatusBar();
@@ -545,6 +571,7 @@ export function activate(context: vscode.ExtensionContext): void {
     testApiCommand,
     repoBriefCommand,
     setDepthCommand,
+    showSidebarCommand,
     configListener,
     selectionListener,
     editorListener,
@@ -569,13 +596,10 @@ export function deactivate(): void {
     clearTimeout(liveExplainTimer);
     liveExplainTimer = undefined;
   }
-  clearPanelResurrectTimers();
   outputChannel?.dispose();
   outputChannel = undefined;
-  panel?.dispose();
-  panel = undefined;
+  sidebarProvider = undefined;
   currentSession = undefined;
-  panelMessageHooked = false;
   liveExplainStatusBar?.dispose();
   liveExplainStatusBar = undefined;
   explainDepthStatusBar?.dispose();
@@ -914,7 +938,7 @@ async function runRepoBrief(options?: { force?: boolean }): Promise<void> {
       result: pending
     };
     renderExplainPanel(extensionContext, currentSession.request, pending, { live: false, announce: false });
-    void vscode.window.showInformationMessage("Repo brief ready in the Codegraph panel.");
+    void vscode.window.showInformationMessage("Repo brief ready in the Codegraph sidebar (activity bar).");
     return;
   }
 
@@ -1245,10 +1269,9 @@ async function runExplainSelection(
     captureEditorState(editor, request);
   }
 
-  // Agent mode: slim pointer goes to Agent chat; local source window fills the panel Jump list.
-  // (Jump list is panel-only — Agent chat never shows Definitions/Usages links.)
+  // Agent mode: slim pointer → Agent chat; Jump list → activity-bar sidebar (not editor webview).
+  // Editor WebviewPanels get closed when Cursor Agent opens; the sidebar survives.
   if (agentMode) {
-    clearPanelResurrectTimers();
     logCodegraph(`Agent mode explain for ${request.filePath}:${request.line} (live=${live})`, true);
     const grounded = await gatherSourceWindowContext(request);
     if (live && generation !== liveExplainGeneration) {
@@ -1259,8 +1282,19 @@ async function runExplainSelection(
       return;
     }
 
-    // Hand off first, then open the Jump panel. Opening the webview *before* Cmd+I
-    // lets Cursor Agent steal/close the Beside editor group (panel pops then vanishes).
+    // Update sidebar Jump list before handoff so links are ready even if Agent UI steals focus.
+    const pendingJump: EnrichedSelectionContext = {
+      ...grounded,
+      enrichment: {
+        used: false,
+        provider: "cursor-agent",
+        model: "subscription",
+        error: "Sending to Agent chat… Jump links stay in the Codegraph sidebar."
+      }
+    };
+    currentSession = { request, result: pendingJump };
+    renderExplainPanel(context, request, pendingJump, { live, announce: false });
+
     const handoff = await enrichGroundedContext(request, pointerContext(request), {
       live,
       handOffAgent: options?.handOffAgent ?? true
@@ -1296,14 +1330,13 @@ async function runExplainSelection(
       enrichment: {
         ...handoff.enrichment,
         error: handoff.enrichment.used
-          ? `${handoff.enrichment.error ?? "Sent to Agent."} Jump list is in this panel.`
+          ? `${handoff.enrichment.error ?? "Sent to Agent."} Open Codegraph in the activity bar for Jump.`
           : handoff.enrichment.error ??
-            "Agent handoff failed. Jump list is still available in this panel."
+            "Agent handoff failed. Jump list is in the Codegraph sidebar."
       }
     };
     currentSession = { request, result };
     renderExplainPanel(context, request, result, { live, announce: false });
-    schedulePanelResurrect(context, request, result, live);
     logCodegraph(
       `Agent handoff ${result.enrichment.used ? "OK" : "FAILED"} — defs=${result.context.definitions.length} refs=${result.context.references.length} — ${result.enrichment.error ?? ""}`,
       true
@@ -1340,7 +1373,7 @@ async function runExplainSelection(
 }
 
 function renderExplainPanel(
-  context: vscode.ExtensionContext,
+  _context: vscode.ExtensionContext,
   request: { rootPath: string; filePath: string; line: number; selectedText?: string },
   result: EnrichedSelectionContext,
   options: { live: boolean; announce: boolean }
@@ -1372,22 +1405,23 @@ function renderExplainPanel(
     )
   );
   channel.appendLine(`enrichment=${enrichmentStatusLabel(result.enrichment)}`);
+  channel.appendLine(
+    `jumpSidebar defs=${result.context.definitions.length} refs=${result.context.references.length}`
+  );
 
-  ensurePanel(context);
-
-  if (!panel) {
+  if (!sidebarProvider) {
+    logCodegraph("Codegraph sidebar provider missing — Jump UI unavailable.", true);
     return;
   }
 
-  const label = request.selectedText
-    ? request.selectedText.slice(0, 48)
-    : `${request.filePath}:${request.line}`;
-  panel.title = options.live ? `Codegraph Live: ${label}` : `Codegraph: ${label}`;
-  panel.webview.html = renderExplanationHtml(request.filePath, request.line, result, {
-    logoUri: extensionIconWebviewUri(panel.webview)
-  });
-  // Column Two is stabler than Beside when Agent chat opens/closes editor groups.
-  panel.reveal(vscode.ViewColumn.Two, true);
+  const webview = sidebarProvider.webview;
+  sidebarProvider.setHtml(
+    renderExplanationHtml(request.filePath, request.line, result, {
+      logoUri: webview ? extensionIconWebviewUri(webview) : undefined
+    })
+  );
+  // Reveal activity-bar view (does not use editor groups — Agent cannot close it).
+  void sidebarProvider.reveal(true);
 
   if (options.announce) {
     const enrichmentLabel = enrichmentStatusLabel(result.enrichment);
@@ -1396,73 +1430,6 @@ function renderExplainPanel(
       : `Prepared local context for ${request.filePath}:${request.line} (tier ${result.metadata.capabilityTier}, enrichment ${enrichmentLabel}).`;
 
     void vscode.window.showInformationMessage(summaryText);
-  }
-}
-
-function clearPanelResurrectTimers(): void {
-  for (const timer of panelResurrectTimers) {
-    clearTimeout(timer);
-  }
-  panelResurrectTimers = [];
-}
-
-/** Cursor Agent UI often closes the webview editor group — recreate/reveal shortly after. */
-function schedulePanelResurrect(
-  context: vscode.ExtensionContext,
-  request: { rootPath: string; filePath: string; line: number; selectedText?: string },
-  result: EnrichedSelectionContext,
-  live: boolean
-): void {
-  clearPanelResurrectTimers();
-  for (const delayMs of [500, 1200, 2400]) {
-    const timer = setTimeout(() => {
-      if (!extensionContext) {
-        return;
-      }
-      if (
-        !currentSession ||
-        currentSession.request.filePath !== request.filePath ||
-        currentSession.request.line !== request.line
-      ) {
-        return;
-      }
-      if (!panel) {
-        logCodegraph(`Jump panel was closed — recreating after Agent UI (${delayMs}ms)`, true);
-      }
-      renderExplainPanel(context, request, currentSession.result ?? result, {
-        live,
-        announce: false
-      });
-    }, delayMs);
-    panelResurrectTimers.push(timer);
-  }
-}
-
-function ensurePanel(context: vscode.ExtensionContext): void {
-  if (!panel) {
-    panel = vscode.window.createWebviewPanel(
-      "codegraph.explanation",
-      "Codegraph",
-      vscode.ViewColumn.Two,
-      {
-        enableFindWidget: true,
-        enableScripts: true,
-        retainContextWhenHidden: true,
-        localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, "media")]
-      }
-    );
-    panel.onDidDispose(() => {
-      panel = undefined;
-      panelMessageHooked = false;
-      logCodegraph("Codegraph panel disposed (will recreate on next explain).");
-    }, undefined, context.subscriptions);
-  }
-
-  if (!panelMessageHooked) {
-    panel.webview.onDidReceiveMessage((message) => {
-      void handlePanelMessage(message);
-    }, undefined, context.subscriptions);
-    panelMessageHooked = true;
   }
 }
 
@@ -1515,12 +1482,15 @@ async function handlePanelMessage(message: unknown): Promise<void> {
     lastLiveExplainKey = "";
     updateExplainDepthStatusBar();
     void vscode.window.showInformationMessage(`Explain depth: ${depth}`);
-    if (panel && currentSession && extensionContext) {
-      panel.webview.html = renderExplanationHtml(
-        currentSession.request.filePath,
-        currentSession.request.line,
-        currentSession.result,
-        { logoUri: extensionIconWebviewUri(panel.webview) }
+    if (sidebarProvider && currentSession) {
+      const webview = sidebarProvider.webview;
+      sidebarProvider.setHtml(
+        renderExplanationHtml(
+          currentSession.request.filePath,
+          currentSession.request.line,
+          currentSession.result,
+          { logoUri: webview ? extensionIconWebviewUri(webview) : undefined }
+        )
       );
     }
     return;
@@ -1561,7 +1531,7 @@ async function handlePanelMessage(message: unknown): Promise<void> {
         .update("enabled", false, vscode.ConfigurationTarget.Workspace);
     }
 
-    if (panel && currentSession && extensionContext) {
+    if (currentSession && extensionContext) {
       await runExplainSelection(extensionContext, currentSession.request, {
         live: liveExplainEnabled,
         handOffAgent: false
@@ -1570,8 +1540,8 @@ async function handlePanelMessage(message: unknown): Promise<void> {
 
     void vscode.window.showInformationMessage(
       useApiKeyProvider
-        ? "API key mode: enriched answers show in the Codegraph panel."
-        : "Agent mode: answers show in Cursor Agent chat (no side panel)."
+        ? "API key mode: enriched answers show in the Codegraph sidebar."
+        : "Agent mode: write-up in Agent chat; Jump list in the Codegraph activity-bar sidebar."
     );
   }
 }
@@ -1777,7 +1747,7 @@ function renderExplanationHtml(
     : `
       <p class="pending">${
         result.enrichment?.provider === "cursor-agent" || result.enrichment?.provider === "agent"
-          ? "Full write-up is in <strong>Agent chat</strong>. This panel holds the Jump list."
+          ? "Full write-up is in <strong>Agent chat</strong>. This <strong>sidebar</strong> holds the Jump list."
           : "Source window ready — waiting for API enrichment."
       }</p>
       <p class="muted">${escapeHtml(result.enrichment?.error || "")}</p>

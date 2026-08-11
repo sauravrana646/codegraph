@@ -33,7 +33,7 @@ Turn Live ON once, then **only move your cursor** — no typing, no Enter.
 
 **Status bar (left):** `CG Live: ON/OFF` toggles Live Explain; `CG Depth: Short|Standard|Deep` sets answer depth.
 
-**Jump list:** in the **Codegraph** side panel (not Agent chat) — Definitions / Usages links open `file:line`. Agent mode still opens that panel for jumps while the write-up stays in Agent chat.
+**Jump list:** in the **Codegraph activity-bar sidebar** (graph icon on the left) — not Agent chat and not an editor tab. Definitions / Usages open `file:line`. Command: **Codegraph: Show Jump Sidebar**.
 
 - **Short** — purpose only  
 - **Standard** — purpose + fields + notes  

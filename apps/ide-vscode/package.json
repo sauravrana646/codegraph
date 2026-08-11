@@ -1,7 +1,7 @@
 {
   "name": "codegraph-ide-vscode",
   "displayName": "Codegraph",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "private": true,
   "publisher": "codegraph",
   "description": "Python-first codebase intelligence extension for VS Code and Cursor.",
@@ -39,10 +39,31 @@
     "onCommand:codegraph.configureApiProvider",
     "onCommand:codegraph.testApiConnection",
     "onCommand:codegraph.repoBrief",
-    "onCommand:codegraph.setExplainDepth"
+    "onCommand:codegraph.setExplainDepth",
+    "onCommand:codegraph.showSidebar",
+    "onView:codegraph.sidebar"
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "codegraph",
+          "title": "Codegraph",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "codegraph": [
+        {
+          "type": "webview",
+          "id": "codegraph.sidebar",
+          "name": "Jump",
+          "contextualTitle": "Codegraph Jump"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "codegraph.toggleLiveExplain",
@@ -83,6 +104,10 @@
       {
         "command": "codegraph.setExplainDepth",
         "title": "Codegraph: Set Explain Depth"
+      },
+      {
+        "command": "codegraph.showSidebar",
+        "title": "Codegraph: Show Jump Sidebar"
       }
     ],
     "configuration": {
