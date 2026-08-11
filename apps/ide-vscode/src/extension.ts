@@ -43,6 +43,7 @@ interface CodeUnderstandingSession {
 let outputChannel: vscode.OutputChannel | undefined;
 let panel: vscode.WebviewPanel | undefined;
 let currentSession: CodeUnderstandingSession | undefined;
+let panelResurrectTimers: ReturnType<typeof setTimeout>[] = [];
 let panelMessageHooked = false;
 let liveExplainEnabled = false;
 let liveExplainStatusBar: vscode.StatusBarItem | undefined;
@@ -568,6 +569,7 @@ export function deactivate(): void {
     clearTimeout(liveExplainTimer);
     liveExplainTimer = undefined;
   }
+  clearPanelResurrectTimers();
   outputChannel?.dispose();
   outputChannel = undefined;
   panel?.dispose();
@@ -1246,6 +1248,7 @@ async function runExplainSelection(
   // Agent mode: slim pointer goes to Agent chat; local source window fills the panel Jump list.
   // (Jump list is panel-only — Agent chat never shows Definitions/Usages links.)
   if (agentMode) {
+    clearPanelResurrectTimers();
     logCodegraph(`Agent mode explain for ${request.filePath}:${request.line} (live=${live})`, true);
     const grounded = await gatherSourceWindowContext(request);
     if (live && generation !== liveExplainGeneration) {
@@ -1256,19 +1259,8 @@ async function runExplainSelection(
       return;
     }
 
-    const pending: EnrichedSelectionContext = {
-      ...grounded,
-      enrichment: {
-        used: false,
-        provider: "cursor-agent",
-        model: "subscription",
-        error:
-          "Explanation is in Agent chat. Use Jump below for Definitions / Usages (panel-only)."
-      }
-    };
-    currentSession = { request, result: pending };
-    renderExplainPanel(context, request, pending, { live, announce: false });
-
+    // Hand off first, then open the Jump panel. Opening the webview *before* Cmd+I
+    // lets Cursor Agent steal/close the Beside editor group (panel pops then vanishes).
     const handoff = await enrichGroundedContext(request, pointerContext(request), {
       live,
       handOffAgent: options?.handOffAgent ?? true
@@ -1305,11 +1297,13 @@ async function runExplainSelection(
         ...handoff.enrichment,
         error: handoff.enrichment.used
           ? `${handoff.enrichment.error ?? "Sent to Agent."} Jump list is in this panel.`
-          : handoff.enrichment.error
+          : handoff.enrichment.error ??
+            "Agent handoff failed. Jump list is still available in this panel."
       }
     };
     currentSession = { request, result };
     renderExplainPanel(context, request, result, { live, announce: false });
+    schedulePanelResurrect(context, request, result, live);
     logCodegraph(
       `Agent handoff ${result.enrichment.used ? "OK" : "FAILED"} — defs=${result.context.definitions.length} refs=${result.context.references.length} — ${result.enrichment.error ?? ""}`,
       true
@@ -1392,7 +1386,8 @@ function renderExplainPanel(
   panel.webview.html = renderExplanationHtml(request.filePath, request.line, result, {
     logoUri: extensionIconWebviewUri(panel.webview)
   });
-  panel.reveal(vscode.ViewColumn.Beside, true);
+  // Column Two is stabler than Beside when Agent chat opens/closes editor groups.
+  panel.reveal(vscode.ViewColumn.Two, true);
 
   if (options.announce) {
     const enrichmentLabel = enrichmentStatusLabel(result.enrichment);
@@ -1404,21 +1399,62 @@ function renderExplainPanel(
   }
 }
 
+function clearPanelResurrectTimers(): void {
+  for (const timer of panelResurrectTimers) {
+    clearTimeout(timer);
+  }
+  panelResurrectTimers = [];
+}
+
+/** Cursor Agent UI often closes the webview editor group — recreate/reveal shortly after. */
+function schedulePanelResurrect(
+  context: vscode.ExtensionContext,
+  request: { rootPath: string; filePath: string; line: number; selectedText?: string },
+  result: EnrichedSelectionContext,
+  live: boolean
+): void {
+  clearPanelResurrectTimers();
+  for (const delayMs of [500, 1200, 2400]) {
+    const timer = setTimeout(() => {
+      if (!extensionContext) {
+        return;
+      }
+      if (
+        !currentSession ||
+        currentSession.request.filePath !== request.filePath ||
+        currentSession.request.line !== request.line
+      ) {
+        return;
+      }
+      if (!panel) {
+        logCodegraph(`Jump panel was closed — recreating after Agent UI (${delayMs}ms)`, true);
+      }
+      renderExplainPanel(context, request, currentSession.result ?? result, {
+        live,
+        announce: false
+      });
+    }, delayMs);
+    panelResurrectTimers.push(timer);
+  }
+}
+
 function ensurePanel(context: vscode.ExtensionContext): void {
   if (!panel) {
     panel = vscode.window.createWebviewPanel(
       "codegraph.explanation",
-      "Codegraph Explanation",
-      vscode.ViewColumn.Beside,
+      "Codegraph",
+      vscode.ViewColumn.Two,
       {
         enableFindWidget: true,
         enableScripts: true,
+        retainContextWhenHidden: true,
         localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, "media")]
       }
     );
     panel.onDidDispose(() => {
       panel = undefined;
       panelMessageHooked = false;
+      logCodegraph("Codegraph panel disposed (will recreate on next explain).");
     }, undefined, context.subscriptions);
   }
 
