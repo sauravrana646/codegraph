@@ -2,8 +2,10 @@ import * as vscode from "vscode";
 import * as path from "node:path";
 
 import { buildSelectionContext, findDefinition, findUsages } from "@codegraph/core";
+import { enrichSelectionContext, type EnrichmentMetadata } from "@codegraph/model-gateway";
 
 type SelectionContext = Awaited<ReturnType<typeof buildSelectionContext>>;
+type EnrichedSelectionContext = SelectionContext & { enrichment?: EnrichmentMetadata };
 
 interface CodeUnderstandingSession {
   request: {
@@ -12,7 +14,7 @@ interface CodeUnderstandingSession {
     line: number;
     selectedText?: string;
   };
-  result: SelectionContext;
+  result: EnrichedSelectionContext;
 }
 
 type SourceLike = { file: string; line: number; excerpt?: string };
@@ -121,17 +123,72 @@ function getActiveRequest():
   };
 }
 
+function enrichmentConfig(): {
+  enabled: boolean;
+  apiKey?: string;
+  baseUrl: string;
+  model: string;
+} {
+  const cfg = vscode.workspace.getConfiguration("codegraph.enrichment");
+  const apiKey = cfg.get<string>("apiKey")?.trim() || process.env.OPENAI_API_KEY || process.env.CODEGRAPH_API_KEY;
+
+  return {
+    enabled: Boolean(cfg.get<boolean>("enabled")),
+    apiKey: apiKey || undefined,
+    baseUrl: String(cfg.get<string>("baseUrl") ?? "https://api.openai.com/v1"),
+    model: String(cfg.get<string>("model") ?? "gpt-4o-mini")
+  };
+}
+
+function enrichmentStatusLabel(enrichment?: EnrichmentMetadata): string {
+  if (!enrichment) {
+    return "off";
+  }
+
+  if (enrichment.used) {
+    return enrichment.model ? `ok:${enrichment.model}` : "ok";
+  }
+
+  if (enrichment.error?.includes("not requested")) {
+    return "off";
+  }
+
+  if (enrichment.error?.includes("not configured") || enrichment.error?.includes("API_KEY")) {
+    return "missing_api_key";
+  }
+
+  return enrichment.error ? "failed" : "skipped";
+}
+
 async function runExplainSelection(
   context: vscode.ExtensionContext,
   request: { rootPath: string; filePath: string; line: number; selectedText?: string }
 ): Promise<void> {
-  const result = await buildSelectionContext(request);
+  const deterministic = await buildSelectionContext(request);
+  const enrichCfg = enrichmentConfig();
+
+  if (enrichCfg.enabled && !enrichCfg.apiKey) {
+    void vscode.window.showWarningMessage(
+      "Codegraph enrichment is enabled but no API key is configured (codegraph.enrichment.apiKey or OPENAI_API_KEY)."
+    );
+  }
+
+  const result = await enrichSelectionContext(deterministic, {
+    enabled: enrichCfg.enabled,
+    provider: {
+      apiKey: enrichCfg.apiKey,
+      baseUrl: enrichCfg.baseUrl,
+      model: enrichCfg.model
+    }
+  });
+
   currentSession = { request, result };
 
   const channel = getOutputChannel();
   channel.clear();
   channel.appendLine("Codegraph selection context");
   channel.appendLine(JSON.stringify(result, null, 2));
+  channel.appendLine(`enrichment=${enrichmentStatusLabel(result.enrichment)}`);
 
   ensurePanel(context);
 
@@ -143,9 +200,10 @@ async function runExplainSelection(
   panel.webview.html = renderExplanationHtml(request.filePath, request.line, result);
   panel.reveal(vscode.ViewColumn.Beside, true);
 
+  const enrichmentLabel = enrichmentStatusLabel(result.enrichment);
   const summaryText = request.selectedText
-    ? `Prepared local context for "${request.selectedText}" (tier ${result.metadata.capabilityTier}).`
-    : `Prepared local context for ${request.filePath}:${request.line} (tier ${result.metadata.capabilityTier}).`;
+    ? `Prepared local context for "${request.selectedText}" (tier ${result.metadata.capabilityTier}, enrichment ${enrichmentLabel}).`
+    : `Prepared local context for ${request.filePath}:${request.line} (tier ${result.metadata.capabilityTier}, enrichment ${enrichmentLabel}).`;
 
   void vscode.window.showInformationMessage(summaryText);
 }
@@ -240,9 +298,15 @@ function renderSourceList(items: SourceLike[]): string {
 function renderExplanationHtml(
   filePath: string,
   line: number,
-  result: SelectionContext
+  result: EnrichedSelectionContext
 ): string {
   const inferredClaims = result.explanation.inferredClaims ?? [];
+  const enrichmentLabel = enrichmentStatusLabel(result.enrichment);
+  const enrichmentNote = result.enrichment?.used
+    ? `<p class="muted">Model enrichment applied (${escapeHtml(result.enrichment.provider ?? "provider")} / ${escapeHtml(result.enrichment.model ?? "model")}). Sources remain deterministic.</p>`
+    : result.enrichment?.error && enrichmentLabel !== "off"
+      ? `<p class="muted">Enrichment ${escapeHtml(enrichmentLabel)}: ${escapeHtml(result.enrichment.error)}</p>`
+      : `<p class="muted">Enrichment ${escapeHtml(enrichmentLabel)}. Enable via Codegraph settings when desired.</p>`;
 
   return `<!DOCTYPE html>
   <html lang="en">
@@ -311,7 +375,9 @@ function renderExplanationHtml(
         <span class="pill">Tier ${result.metadata.capabilityTier}</span>
         <span class="pill">Confidence ${result.metadata.confidence.toFixed(2)}</span>
         <span class="pill">Source ${escapeHtml(result.metadata.source)}</span>
+        <span class="pill">Enrichment ${escapeHtml(enrichmentLabel)}</span>
       </p>
+      ${enrichmentNote}
       <div class="actions">
         <button class="action-button" data-action="findDefinition">Find Definition</button>
         <button class="action-button" data-action="findUsages">Find Usages</button>

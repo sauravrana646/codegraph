@@ -32,7 +32,32 @@
         "command": "codegraph.findUsages",
         "title": "Codegraph: Find Usages"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Codegraph",
+      "properties": {
+        "codegraph.enrichment.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable optional model-backed explanation enrichment."
+        },
+        "codegraph.enrichment.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key for OpenAI-compatible enrichment provider."
+        },
+        "codegraph.enrichment.baseUrl": {
+          "type": "string",
+          "default": "https://api.openai.com/v1",
+          "description": "Base URL for the OpenAI-compatible enrichment provider."
+        },
+        "codegraph.enrichment.model": {
+          "type": "string",
+          "default": "gpt-4o-mini",
+          "description": "Model name used for explanation enrichment."
+        }
+      }
+    }
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -40,7 +65,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@codegraph/core": "0.1.0"
+    "@codegraph/core": "0.1.0",
+    "@codegraph/model-gateway": "0.1.0"
   },
   "devDependencies": {
     "@types/vscode": "^1.105.0"

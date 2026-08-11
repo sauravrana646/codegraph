@@ -10,7 +10,8 @@
     "outDir": "dist"
   },
   "references": [
-    { "path": "../../packages/core" }
+    { "path": "../../packages/core" },
+    { "path": "../../packages/model-gateway" }
   ],
   "include": ["src/**/*"]
 }

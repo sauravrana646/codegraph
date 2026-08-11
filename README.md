@@ -227,12 +227,21 @@ Current behavior:
 
 - gathers local selection context
 - performs deterministic Python-aware symbol discovery and bounded reference search
-- opens a side panel with summary, sources, inferred claims, and caveats
+- opens a side panel with summary, sources, inferred claims, caveats, and enrichment status
 - lets you click cited source locations in the panel to jump back into the editor
 - adds command palette actions for `Codegraph: Find Definition` and `Codegraph: Find Usages`
 - keeps a lightweight in-memory session for the current explanation target so related commands can reuse it
 - keeps a raw JSON trace in the `Codegraph` output channel for debugging
-- does not call an LLM yet
+- optionally enriches narrative fields when `codegraph.enrichment.enabled` is on and an API key is configured
+
+Useful settings:
+
+```text
+codegraph.enrichment.enabled
+codegraph.enrichment.apiKey
+codegraph.enrichment.baseUrl
+codegraph.enrichment.model
+```
 
 Useful commands in Cursor/VS Code:
 
