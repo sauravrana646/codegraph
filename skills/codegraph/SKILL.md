@@ -5,7 +5,7 @@ license: MIT
 compatibility: Requires Node.js 20+ and a local Codegraph install (MCP preferred, CLI/HTTP fallback). Python-first; works best on .py codebases. No external model API key required when running inside Cursor Agent.
 metadata:
   author: codegraph
-  version: "0.1.3"
+  version: "0.1.4"
   homepage: https://github.com/sauravrana646/codegraph
 ---
 
