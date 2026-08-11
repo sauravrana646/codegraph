@@ -85,6 +85,18 @@ Start the server:
 npm run serve --workspace @codegraph/runtime -- 4311
 ```
 
+Security hardening (recommended for any shared machine):
+
+```bash
+export CODEGRAPH_RUNTIME_TOKEN="long-random-token"
+export CODEGRAPH_ALLOWED_ROOTS="/absolute/path/to/repo"
+```
+
+- Requests must send `Authorization: Bearer <token>` (or `x-codegraph-token`)
+- `rootPath` must be under an allowed root
+- HTTP/MCP callers cannot supply enrichment `provider.baseUrl` / `apiKey` (env/settings only)
+- Provider URLs must be HTTPS and non-private (local trusted IDE settings may allow local providers)
+
 Health check:
 
 ```bash
