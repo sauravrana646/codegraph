@@ -29,6 +29,7 @@
   ],
   "activationEvents": [
     "onCommand:codegraph.explainSelection",
+    "onCommand:codegraph.askCursorAgent",
     "onCommand:codegraph.findDefinition",
     "onCommand:codegraph.findUsages"
   ],
@@ -38,6 +39,10 @@
       {
         "command": "codegraph.explainSelection",
         "title": "Codegraph: Explain Selection"
+      },
+      {
+        "command": "codegraph.askCursorAgent",
+        "title": "Codegraph: Ask Cursor/Claude Agent"
       },
       {
         "command": "codegraph.findDefinition",
@@ -51,15 +56,31 @@
     "configuration": {
       "title": "Codegraph",
       "properties": {
+        "codegraph.modelAccess.useBuiltInAgent": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Use **built-in Cursor/Claude agent** for narrative explanations (no API key). Recommended for Cursor plans."
+        },
+        "codegraph.modelAccess.useApiKeyProvider": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Use an **API key provider** (OpenAI-compatible) for in-panel enrichment. Requires `codegraph.enrichment.apiKey` or `OPENAI_API_KEY`."
+        },
         "codegraph.enrichment.enabled": {
           "type": "boolean",
           "default": false,
-          "description": "Enable optional model-backed explanation enrichment."
+          "deprecationMessage": "Prefer codegraph.modelAccess.useApiKeyProvider.",
+          "description": "Legacy: enable optional model-backed explanation enrichment."
+        },
+        "codegraph.enrichment.preferIdeHost": {
+          "type": "boolean",
+          "default": true,
+          "description": "When API key mode is on, try IDE host language models (vscode.lm) before the API key provider."
         },
         "codegraph.enrichment.apiKey": {
           "type": "string",
           "default": "",
-          "description": "API key for OpenAI-compatible enrichment provider."
+          "description": "API key for OpenAI-compatible enrichment provider (only used when Use API Key Provider is enabled)."
         },
         "codegraph.enrichment.baseUrl": {
           "type": "string",
@@ -69,7 +90,7 @@
         "codegraph.enrichment.model": {
           "type": "string",
           "default": "gpt-4o-mini",
-          "description": "Model name used for explanation enrichment."
+          "description": "Model name used for API key enrichment."
         }
       }
     }

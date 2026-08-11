@@ -3,9 +3,11 @@
 ## Explain an unfamiliar symbol
 
 1. Gather location (`rootPath`, `filePath`, `line`, `selectedText`).
-2. Call `explain_selection` with `enrich: false` first.
-3. Answer from `data.explanation` + `data.context` sources.
-4. Only enable enrichment if the user asks for polished prose.
+2. Call `explain_selection` with `enrich` omitted or `false`.
+3. Answer from `data.explanation` + `data.context` sources, expanding narrative yourself if needed.
+4. On Cursor plans, never request API keys and never set `enrich: true`.
+
+See also [cursor-plan.md](cursor-plan.md).
 
 ## Find definition then usages
 
@@ -24,7 +26,7 @@
 1. Run Codegraph tools before writing a definitive explanation.
 2. Separate:
    - Facts: sources, definitions, usages, metadata
-   - Inferences: enrichment text, agent synthesis beyond returned sources
+   - Inferences: your synthesis beyond returned sources
 3. If capability tier/confidence is low, say uncertainty explicitly.
 
 ## Session-style follow-up (HTTP)
