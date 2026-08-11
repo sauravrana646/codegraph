@@ -75,7 +75,9 @@ function updateLiveExplainStatusBar(): void {
     return;
   }
 
-  liveExplainStatusBar.text = liveExplainEnabled ? "$(eye) Codegraph Live: ON" : "$(eye-closed) Codegraph Live: OFF";
+  liveExplainStatusBar.text = liveExplainEnabled
+    ? "$(type-hierarchy) Codegraph Live: ON"
+    : "$(type-hierarchy-sub) Codegraph Live: OFF";
   liveExplainStatusBar.tooltip = liveExplainEnabled
     ? "Live Explain ON — move cursor; Agent answers automatically in Agent chat."
     : "Live Explain OFF. Click to turn on automatic explanations.";
@@ -144,7 +146,8 @@ async function setLiveExplainEnabled(enabled: boolean, announce = true): Promise
     panel.webview.html = renderExplanationHtml(
       currentSession.request.filePath,
       currentSession.request.line,
-      currentSession.result
+      currentSession.result,
+      { logoUri: extensionIconWebviewUri(panel.webview) }
     );
   }
 }
@@ -1014,7 +1017,9 @@ function renderExplainPanel(
     ? request.selectedText.slice(0, 48)
     : `${request.filePath}:${request.line}`;
   panel.title = options.live ? `Codegraph Live: ${label}` : `Codegraph: ${label}`;
-  panel.webview.html = renderExplanationHtml(request.filePath, request.line, result);
+  panel.webview.html = renderExplanationHtml(request.filePath, request.line, result, {
+    logoUri: extensionIconWebviewUri(panel.webview)
+  });
   panel.reveal(vscode.ViewColumn.Beside, true);
 
   if (options.announce) {
@@ -1035,7 +1040,8 @@ function ensurePanel(context: vscode.ExtensionContext): void {
       vscode.ViewColumn.Beside,
       {
         enableFindWidget: true,
-        enableScripts: true
+        enableScripts: true,
+        localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, "media")]
       }
     );
     panel.onDidDispose(() => {
@@ -1227,10 +1233,22 @@ function shortFileLabel(filePath: string): string {
   return parts.slice(-2).join("/");
 }
 
+function extensionIconWebviewUri(webview: vscode.Webview): string | undefined {
+  if (!extensionContext) {
+    return undefined;
+  }
+  const iconPath = vscode.Uri.joinPath(extensionContext.extensionUri, "media", "icon.png");
+  if (!fs.existsSync(iconPath.fsPath)) {
+    return undefined;
+  }
+  return webview.asWebviewUri(iconPath).toString();
+}
+
 function renderExplanationHtml(
   filePath: string,
   line: number,
-  result: EnrichedSelectionContext
+  result: EnrichedSelectionContext,
+  options?: { logoUri?: string }
 ): string {
   const definition = result.explanation.sources.find((source) => source.kind === "definition") ?? result.explanation.sources[0];
   const endLineGuess =
@@ -1252,6 +1270,7 @@ function renderExplanationHtml(
     .filter((entry) => entry.trim() && !entry.includes("keep moving") && !entry.startsWith("- [lsp]"))
     .join("\n");
   const resolution = `${result.metadata.source} · tier ${result.metadata.capabilityTier}`;
+  const logoUri = options?.logoUri;
 
   const body = enriched
     ? `
@@ -1270,7 +1289,9 @@ function renderExplanationHtml(
     `
     : `
       <p class="pending">Source window ready. Waiting for ${
-        result.enrichment?.provider === "openai-compatible" ? "API enrichment" : "Agent enrichment"
+        result.enrichment?.provider === "cursor-agent" || result.enrichment?.provider === "agent"
+          ? "Agent enrichment"
+          : "API enrichment"
       } — that model writes the final tutoring explanation.</p>
       <p class="muted">${escapeHtml(result.enrichment?.error || "")}</p>
       <details>
@@ -1285,12 +1306,36 @@ function renderExplanationHtml(
       <meta charset="UTF-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1.0" />
       <style>
+        :root {
+          --cg-teal: #2dd4bf;
+          --cg-cyan: #22d3ee;
+          --cg-amber: #f59e0b;
+        }
         body {
           font-family: var(--vscode-font-family);
           color: var(--vscode-editor-foreground);
           padding: 18px 18px 28px;
           line-height: 1.55;
           max-width: 720px;
+        }
+        .brand {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          margin: 0 0 14px;
+        }
+        .brand img {
+          width: 28px;
+          height: 28px;
+          border-radius: 7px;
+          flex: 0 0 auto;
+        }
+        .brand-name {
+          font-size: 0.78rem;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: var(--vscode-descriptionForeground);
+          font-weight: 600;
         }
         h1 {
           font-size: 1.05rem;
@@ -1390,6 +1435,14 @@ function renderExplanationHtml(
       </style>
     </head>
     <body>
+      <div class="brand">
+        ${
+          logoUri
+            ? `<img src="${escapeAttribute(logoUri)}" alt="Codegraph" />`
+            : `<span class="brand-name">◆</span>`
+        }
+        <span class="brand-name">Codegraph</span>
+      </div>
       <h1>${escapeHtml(title)}</h1>
       <p class="location">${escapeHtml(locationLabel)} · ${escapeHtml(resolution)}</p>
 

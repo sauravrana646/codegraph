@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Codegraph">
+  <rect width="128" height="128" rx="24" fill="#12141a"/>
+  <path d="M28 30 L14 64 L28 98" fill="none" stroke="#5a6470" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M100 30 L114 64 L100 98" fill="none" stroke="#5a6470" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <g stroke="#22d3ee" stroke-width="4.5" stroke-linecap="round">
+    <line x1="64" y1="36" x2="36" y2="64"/>
+    <line x1="36" y1="64" x2="64" y2="92"/>
+    <line x1="64" y1="92" x2="92" y2="64"/>
+    <line x1="92" y1="64" x2="64" y2="36"/>
+    <line x1="64" y1="36" x2="64" y2="92"/>
+    <line x1="64" y1="64" x2="92" y2="64"/>
+  </g>
+  <circle cx="64" cy="36" r="7" fill="#2dd4bf"/>
+  <circle cx="36" cy="64" r="7" fill="#2dd4bf"/>
+  <circle cx="64" cy="92" r="7" fill="#2dd4bf"/>
+  <circle cx="64" cy="64" r="7" fill="#2dd4bf"/>
+  <circle cx="92" cy="64" r="7" fill="#f59e0b"/>
+</svg>

@@ -1,7 +1,7 @@
 {
   "name": "codegraph-ide-vscode",
   "displayName": "Codegraph",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "publisher": "codegraph",
   "description": "Python-first codebase intelligence extension for VS Code and Cursor.",
@@ -197,6 +197,7 @@
     "dist/extension.js",
     "media/icon.png",
     "media/icon-256.png",
+    "media/icon.svg",
     "python_symbol_parser.py",
     "README.md",
     "LICENSE"
