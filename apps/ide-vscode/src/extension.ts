@@ -905,30 +905,82 @@ function renderSourceList(items: SourceLike[]): string {
   `;
 }
 
+function renderMarkdownLite(text: string | undefined): string {
+  if (!text?.trim()) {
+    return "<p class=\"muted\">—</p>";
+  }
+
+  const escaped = escapeHtml(text);
+  const lines = escaped.split("\n");
+  const tableLines = lines.filter((line) => line.trim().startsWith("|"));
+  if (tableLines.length >= 2) {
+    const rows = tableLines
+      .filter((line) => !/^\|\s*-+/.test(line.trim()))
+      .map((line) =>
+        line
+          .trim()
+          .replace(/^\|/, "")
+          .replace(/\|$/, "")
+          .split("|")
+          .map((cell) => cell.trim())
+      );
+    if (rows.length > 0) {
+      const [header, ...body] = rows;
+      return `
+        <table>
+          <thead><tr>${(header ?? []).map((cell) => `<th>${cell}</th>`).join("")}</tr></thead>
+          <tbody>
+            ${body.map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join("")}</tr>`).join("")}
+          </tbody>
+        </table>
+      `;
+    }
+  }
+
+  const blocks = escaped.split(/\n\n+/);
+  return blocks
+    .map((block) => {
+      if (block.split("\n").every((line) => line.trim().startsWith("- ") || line.trim() === "")) {
+        const items = block
+          .split("\n")
+          .map((line) => line.trim())
+          .filter((line) => line.startsWith("- "))
+          .map((line) => `<li>${line.slice(2)}</li>`)
+          .join("");
+        return `<ul>${items}</ul>`;
+      }
+      return `<p>${block.replaceAll("\n", "<br/>")}</p>`;
+    })
+    .join("");
+}
+
+function shortFileLabel(filePath: string): string {
+  const parts = filePath.replace(/\\/g, "/").split("/");
+  if (parts.length <= 2) {
+    return filePath;
+  }
+  return parts.slice(-2).join("/");
+}
+
 function renderExplanationHtml(
   filePath: string,
   line: number,
   result: EnrichedSelectionContext
 ): string {
-  const inferredClaims = result.explanation.inferredClaims ?? [];
-  const access = modelAccessConfig();
-  const enrichmentLabel = enrichmentStatusLabel(result.enrichment);
-  const liveLabel = liveExplainEnabled ? "Live ON" : "Live OFF";
-  const modeNote = access.useApiKeyProvider
-    ? access.apiKey
-      ? liveExplainEnabled
-        ? "API key mode + Live Explain: panel shows deterministic sections immediately, then enriches Summary / What it does / Purpose / How / Usages via your provider."
-        : "API key mode: enrichment fills Summary, What it does, Purpose/use, How it works, and Codebase usage via your OpenAI-compatible provider."
-      : "API key mode is on, but no API key is configured yet."
-    : access.useBuiltInAgent
-      ? liveExplainEnabled
-        ? "Agent mode + Live Explain: panel shows full deterministic sections; bridge/pending-prompt asks Agent for the same sections (purpose/use, what it does, how, usages)."
-        : "Agent mode: enrichment + explanation run through Cursor/Claude agent when you ask (subscription, no API key)."
-      : "Model access disabled.";
-
-  const enrichmentNote = result.enrichment?.used
-    ? `<p class="muted">Enrichment applied via ${escapeHtml(result.enrichment.provider ?? "provider")} / ${escapeHtml(result.enrichment.model ?? "model")}. Sources remain deterministic.</p>`
-    : `<p class="muted">${escapeHtml(modeNote)}${result.enrichment?.error ? ` ${escapeHtml(result.enrichment.error)}` : ""}</p>`;
+  const definition = result.explanation.sources.find((source) => source.kind === "definition") ?? result.explanation.sources[0];
+  const endLineGuess =
+    definition?.excerpt && definition.line
+      ? definition.line + Math.max(0, definition.excerpt.split("\n").length - 1)
+      : line;
+  const locationLabel = `${shortFileLabel(filePath)} line ${line}`;
+  const continueText =
+    result.explanation.codebaseUsage?.split("\n").filter(Boolean).at(-1)?.includes("keep moving")
+      ? result.explanation.codebaseUsage.split("\n").filter(Boolean).at(-1)
+      : "Ask about that, or keep moving.";
+  const usageBody = (result.explanation.codebaseUsage ?? "")
+    .split("\n")
+    .filter((entry) => entry.trim() && !entry.includes("keep moving"))
+    .join("\n");
 
   return `<!DOCTYPE html>
   <html lang="en">
@@ -939,73 +991,93 @@ function renderExplanationHtml(
         body {
           font-family: var(--vscode-font-family);
           color: var(--vscode-editor-foreground);
-          padding: 16px;
-          line-height: 1.5;
+          padding: 18px 18px 28px;
+          line-height: 1.55;
+          max-width: 720px;
         }
-        h1, h2, h3 {
-          line-height: 1.2;
+        h1 {
+          font-size: 1.05rem;
+          font-weight: 600;
+          margin: 0 0 4px;
+        }
+        h2 {
+          font-size: 0.95rem;
+          font-weight: 600;
+          margin: 18px 0 8px;
         }
         .muted {
           color: var(--vscode-descriptionForeground);
         }
-        .pill {
-          display: inline-block;
-          padding: 2px 8px;
-          margin-right: 8px;
-          border-radius: 999px;
-          background: var(--vscode-badge-background);
-          color: var(--vscode-badge-foreground);
+        .location {
+          margin: 0 0 14px;
+          color: var(--vscode-descriptionForeground);
+          font-size: 0.92rem;
         }
-        .pill-live-on {
-          background: var(--vscode-statusBarItem-warningBackground, var(--vscode-badge-background));
-          color: var(--vscode-statusBarItem-warningForeground, var(--vscode-badge-foreground));
-        }
-        .actions {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 8px;
-          margin-top: 12px;
-        }
-        .action-button {
-          border: 1px solid var(--vscode-button-border, transparent);
-          background: var(--vscode-button-background);
-          color: var(--vscode-button-foreground);
-          border-radius: 6px;
-          padding: 6px 10px;
-          cursor: pointer;
-        }
-        .action-button.secondary {
-          background: var(--vscode-button-secondaryBackground, transparent);
-          color: var(--vscode-button-secondaryForeground, var(--vscode-editor-foreground));
-        }
-        .mode-box {
-          margin-top: 12px;
-          padding: 10px 12px;
+        .code-card {
+          margin: 0 0 14px;
           border: 1px solid var(--vscode-input-border, transparent);
           background: var(--vscode-textCodeBlock-background);
           border-radius: 6px;
+          overflow: hidden;
         }
-        .mode-box label {
+        .code-card .meta {
           display: flex;
-          align-items: flex-start;
+          justify-content: space-between;
           gap: 8px;
-          margin: 6px 0;
-          cursor: pointer;
+          padding: 8px 10px;
+          font-size: 0.85rem;
+          color: var(--vscode-descriptionForeground);
+          border-bottom: 1px solid var(--vscode-input-border, transparent);
         }
-        .mode-box input {
-          margin-top: 3px;
-        }
-        pre {
-          white-space: pre-wrap;
-          background: var(--vscode-textCodeBlock-background);
+        .code-card pre {
+          margin: 0;
           padding: 10px;
-          border-radius: 6px;
+          white-space: pre-wrap;
           overflow-x: auto;
-        }
-        section {
-          margin-top: 20px;
+          font-size: 0.86rem;
         }
         .source-link {
+          border: none;
+          background: transparent;
+          color: var(--vscode-textLink-foreground);
+          cursor: pointer;
+          padding: 0;
+          font: inherit;
+          text-decoration: underline;
+        }
+        table {
+          width: 100%;
+          border-collapse: collapse;
+          font-size: 0.9rem;
+        }
+        th, td {
+          text-align: left;
+          padding: 6px 8px;
+          border-bottom: 1px solid var(--vscode-input-border, transparent);
+          vertical-align: top;
+        }
+        th {
+          color: var(--vscode-descriptionForeground);
+          font-weight: 600;
+        }
+        ul {
+          margin: 0;
+          padding-left: 1.2rem;
+        }
+        p {
+          margin: 0 0 8px;
+        }
+        .continue {
+          margin-top: 22px;
+          color: var(--vscode-descriptionForeground);
+          font-style: italic;
+        }
+        .footer {
+          margin-top: 18px;
+          font-size: 0.8rem;
+          color: var(--vscode-descriptionForeground);
+        }
+        .footer button {
           border: none;
           background: transparent;
           color: var(--vscode-textLink-foreground);
@@ -1017,96 +1089,44 @@ function renderExplanationHtml(
       </style>
     </head>
     <body>
-      <h1>Codegraph Explanation</h1>
-      <p class="muted">${escapeHtml(filePath)}:${line}</p>
-      <p>
-        <span class="pill ${liveExplainEnabled ? "pill-live-on" : ""}">${escapeHtml(liveLabel)}</span>
-        <span class="pill">Tier ${result.metadata.capabilityTier}</span>
-        <span class="pill">Confidence ${result.metadata.confidence.toFixed(2)}</span>
-        <span class="pill">Source ${escapeHtml(result.metadata.source)}</span>
-        <span class="pill">Mode ${escapeHtml(access.useApiKeyProvider ? "api-key" : access.useBuiltInAgent ? "agent" : "off")}</span>
-        <span class="pill">Enrichment ${escapeHtml(enrichmentLabel)}</span>
+      <h1>${escapeHtml(result.context.target.selectedText || result.explanation.summary.split("—")[0]?.trim() || "Codegraph")}</h1>
+      <p class="location">${escapeHtml(locationLabel)}</p>
+
+      ${
+        definition?.excerpt
+          ? `<div class="code-card">
+              <div class="meta">
+                <span>${escapeHtml(shortFileLabel(definition.file))}</span>
+                <button class="source-link" data-file="${escapeAttribute(definition.file)}" data-line="${definition.line}">
+                  Lines ${definition.line}-${endLineGuess}
+                </button>
+              </div>
+              <pre>${escapeHtml(definition.excerpt)}</pre>
+            </div>`
+          : ""
+      }
+
+      <h2>Purpose</h2>
+      ${renderMarkdownLite(result.explanation.whyItExists)}
+
+      <h2>Fields</h2>
+      ${renderMarkdownLite(result.explanation.whatItDoes)}
+
+      <h2>Notes</h2>
+      ${renderMarkdownLite(result.explanation.howItWorks)}
+
+      ${
+        usageBody.trim()
+          ? `<h2>In this codebase</h2>${renderMarkdownLite(usageBody)}`
+          : ""
+      }
+
+      <p class="continue">${escapeHtml(continueText ?? "Ask about that, or keep moving.")}</p>
+      <p class="footer">
+        Live ${liveExplainEnabled ? "on" : "off"} ·
+        <button data-action="toggleLiveExplain">${liveExplainEnabled ? "turn off" : "turn on"}</button>
       </p>
 
-      <div class="mode-box">
-        <strong>Live Explain</strong>
-        <p class="muted" style="margin: 6px 0 0;">
-          Toggle once, then move the cursor — this panel updates automatically. With the agent bridge + <code>watch-cursor.sh</code>, Cursor Agent can tutor live (learn-codebase style) without Command Palette per symbol.
-        </p>
-      </div>
-
-      <div class="mode-box">
-        <strong>Model access (pick one)</strong>
-        <label>
-          <input id="useBuiltInAgent" type="checkbox" ${access.useBuiltInAgent ? "checked" : ""} />
-          <span>Built-in Cursor/Claude agent <span class="muted">— enrichment + explanation via subscription (no API key)</span></span>
-        </label>
-        <label>
-          <input id="useApiKeyProvider" type="checkbox" ${access.useApiKeyProvider ? "checked" : ""} />
-          <span>API key provider <span class="muted">— enrichment via OpenAI-compatible key (also during Live Explain)</span></span>
-        </label>
-      </div>
-
-      ${enrichmentNote}
-      <div class="actions">
-        <button class="action-button" data-action="toggleLiveExplain">${liveExplainEnabled ? "Turn Live Explain Off" : "Turn Live Explain On"}</button>
-        <button class="action-button secondary" data-action="askCursorAgent">Enrich &amp; Explain with Agent</button>
-        <button class="action-button secondary" data-action="findDefinition">Find Definition</button>
-        <button class="action-button secondary" data-action="findUsages">Find Usages</button>
-      </div>
-
-      <section>
-        <h2>Summary</h2>
-        <p>${escapeHtml(result.explanation.summary)}</p>
-      </section>
-
-      <section>
-        <h2>What it does</h2>
-        <p>${escapeHtml(result.explanation.whatItDoes)}</p>
-      </section>
-
-      <section>
-        <h2>Purpose / what it is used for</h2>
-        <p>${escapeHtml(result.explanation.whyItExists)}</p>
-      </section>
-
-      <section>
-        <h2>How it works</h2>
-        <pre>${escapeHtml(result.explanation.howItWorks)}</pre>
-      </section>
-
-      <section>
-        <h2>In this codebase</h2>
-        <pre>${escapeHtml(result.explanation.codebaseUsage)}</pre>
-      </section>
-
-      <section>
-        <h2>Sources</h2>
-        ${renderSourceList(result.explanation.sources)}
-      </section>
-
-      <section>
-        <h2>Inferred claims</h2>
-        ${
-          inferredClaims.length > 0
-            ? inferredClaims
-                .map(
-                  (claim) => `
-                    <div>
-                      <p><strong>${escapeHtml(claim.claim)}</strong> (${escapeHtml(claim.confidence)})</p>
-                      ${renderSourceList(claim.evidence)}
-                    </div>
-                  `
-                )
-                .join("")
-            : "<p>No inferred claims.</p>"
-        }
-      </section>
-
-      <section>
-        <h2>Caveats</h2>
-        ${renderList(result.explanation.caveats ?? [])}
-      </section>
       <script>
         const vscode = acquireVsCodeApi();
         document.querySelectorAll(".source-link").forEach((node) => {
@@ -1118,30 +1138,11 @@ function renderExplanationHtml(
             });
           });
         });
-        document.querySelectorAll(".action-button").forEach((node) => {
+        document.querySelectorAll("[data-action]").forEach((node) => {
           node.addEventListener("click", () => {
-            vscode.postMessage({
-              type: node.getAttribute("data-action")
-            });
+            vscode.postMessage({ type: node.getAttribute("data-action") });
           });
         });
-        const agentBox = document.getElementById("useBuiltInAgent");
-        const apiBox = document.getElementById("useApiKeyProvider");
-        function emitAccess(changed) {
-          if (changed === "agent" && agentBox && agentBox.checked && apiBox) {
-            apiBox.checked = false;
-          }
-          if (changed === "api" && apiBox && apiBox.checked && agentBox) {
-            agentBox.checked = false;
-          }
-          vscode.postMessage({
-            type: "setModelAccess",
-            useBuiltInAgent: Boolean(agentBox && agentBox.checked),
-            useApiKeyProvider: Boolean(apiBox && apiBox.checked)
-          });
-        }
-        if (agentBox) agentBox.addEventListener("change", () => emitAccess("agent"));
-        if (apiBox) apiBox.addEventListener("change", () => emitAccess("api"));
       </script>
     </body>
   </html>`;

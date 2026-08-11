@@ -88,9 +88,10 @@ function writePendingPrompt(
     : [""];
 
   const prompt = [
-    "Use the Codegraph skill (or learn-codebase tutoring style).",
-    "Live cursor moved — explain this location interactively.",
+    "Use the Codegraph / learn-codebase tutoring style.",
+    "Live cursor moved — explain this location.",
     "Do not ask for API keys.",
+    "No UI chatter about toggles, modes, or enrichment status.",
     "",
     `rootPath: ${state.rootPath}`,
     `filePath: ${state.filePath}`,
@@ -100,15 +101,14 @@ function writePendingPrompt(
     `selection: ${state.selection || "(cursor only)"}`,
     `languageId: ${state.languageId}`,
     ...groundedBlock,
-    "1. If facts above are missing/weak, call Codegraph `explain_selection` (enrich omitted/false).",
-    "2. Respond with ALL of these sections filled usefully:",
-    "   - Summary",
-    "   - What it does",
-    "   - Purpose / what it is used for",
-    "   - How it works",
-    "   - In this codebase (usages)",
-    "   - Cited sources (file:line only from tools/facts)",
-    "3. Keep the answer concise unless the symbol is complex."
+    "Respond exactly like learn-codebase:",
+    "1. Location + short code citation",
+    "2. Purpose: one concrete paragraph",
+    "3. Fields table (Field | Meaning)",
+    "4. Valid shapes / examples when useful",
+    "5. Docstring/validator notes",
+    "6. End with: Ask about that, or keep moving.",
+    "Cite only tool/fact file:line sources."
   ].join("\n");
   fs.writeFileSync(path.join(dir, "pending-prompt.md"), `${prompt}\n`, "utf8");
 }

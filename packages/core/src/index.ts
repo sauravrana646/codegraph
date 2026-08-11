@@ -495,91 +495,100 @@ function describeSymbolRole(symbol: PythonSymbol): string {
   return "Python function";
 }
 
-function formatField(member: PythonAstMember): string {
-  const annotation = member.annotation ? `: ${member.annotation}` : "";
-  const value = member.value ? ` = ${member.value}` : "";
-  return `${member.name}${annotation}${value}`;
-}
-
 function formatMethod(member: PythonAstMember): string {
   const decorators = (member.decorators ?? []).length > 0 ? `@${(member.decorators ?? []).join(", @")} ` : "";
   return `${decorators}${member.name}()`;
 }
 
-function buildStructuralHowItWorks(symbol: PythonSymbol): string {
-  const lines: string[] = [];
+function fieldMeaningHint(member: PythonAstMember): string {
+  const annotation = member.annotation?.trim();
+  const value = member.value?.trim() ?? "";
+  const descriptionMatch = value.match(/description\s*=\s*['"]([^'"]+)['"]/);
+  if (descriptionMatch?.[1]) {
+    return descriptionMatch[1];
+  }
 
-  if (symbol.kind === "class") {
-    const bases = symbol.bases.length > 0 ? symbol.bases.join(", ") : "(no explicit bases)";
-    lines.push(`${symbol.name} is a ${describeSymbolRole(symbol)} inheriting from ${bases}.`);
+  if (annotation?.includes("None")) {
+    return `optional ${annotation}`;
+  }
 
-    if (symbol.docstring) {
-      lines.push(`Docstring: ${symbol.docstring}`);
-    }
+  if (value.includes("Field(")) {
+    return annotation ? `${annotation} (Field-constrained)` : "Field-constrained value";
+  }
 
-    const fields = fieldMembers(symbol);
-    if (fields.length > 0) {
-      lines.push("Fields:");
-      for (const field of fields.slice(0, 12)) {
-        lines.push(`- ${formatField(field)}`);
-      }
-    }
+  return annotation || "declared member";
+}
 
-    const validators = validatorMethods(symbol);
-    if (validators.length > 0) {
-      lines.push("Validators / serializers:");
-      for (const method of validators.slice(0, 8)) {
-        lines.push(`- ${formatMethod(method)}`);
-      }
-    }
+function buildFieldsTable(symbol: PythonSymbol): string {
+  const fields = fieldMembers(symbol);
+  if (fields.length === 0) {
+    return "No declared fields on this symbol.";
+  }
 
-    const methods = methodMembers(symbol).filter(
-      (member) => !validatorMethods(symbol).some((validator) => validator.name === member.name)
-    );
-    if (methods.length > 0) {
-      lines.push("Methods:");
-      for (const method of methods.slice(0, 8)) {
-        lines.push(`- ${formatMethod(method)}`);
-      }
-    }
-  } else {
-    lines.push(`${symbol.name} is a ${describeSymbolRole(symbol)} defined at this location.`);
-    if (symbol.docstring) {
-      lines.push(`Docstring: ${symbol.docstring}`);
-    }
-    if (symbol.decorators.length > 0) {
-      lines.push(`Decorators: ${symbol.decorators.join(", ")}`);
+  const rows = fields
+    .slice(0, 16)
+    .map((field) => `| ${field.name} | ${fieldMeaningHint(field).replace(/\|/g, "/")} |`)
+    .join("\n");
+
+  return `| Field | Meaning |\n| --- | --- |\n${rows}`;
+}
+
+function buildTutoringHowItWorks(symbol: PythonSymbol): string {
+  const parts: string[] = [];
+
+  if (symbol.docstring) {
+    parts.push(`Docstring note: ${symbol.docstring}`);
+  }
+
+  const validators = validatorMethods(symbol);
+  if (validators.length > 0) {
+    parts.push("Validators:");
+    for (const method of validators.slice(0, 8)) {
+      parts.push(`- ${formatMethod(method)}`);
     }
   }
 
-  lines.push("", "Definition excerpt:", symbol.excerpt);
-  return lines.join("\n");
+  const methods = methodMembers(symbol).filter(
+    (member) => !validators.some((validator) => validator.name === member.name)
+  );
+  if (methods.length > 0) {
+    parts.push("Methods:");
+    for (const method of methods.slice(0, 8)) {
+      parts.push(`- ${formatMethod(method)}`);
+    }
+  }
+
+  if (symbol.kind === "class" && isPydanticLike(symbol)) {
+    parts.push(
+      "Two common shapes: populate required fields for a normal instance; when optional/nullable fields are None, check nearby validators for enforced alternatives."
+    );
+  }
+
+  if (parts.length === 0) {
+    parts.push(symbol.excerpt);
+  }
+
+  return parts.join("\n");
 }
 
 function buildWhatItDoes(symbolName: string | undefined, primary?: PythonSymbol): string {
   if (!symbolName) {
-    return "This explanation focuses on the nearest code section around the cursor.";
+    return "Nearest code around the cursor.";
   }
 
   if (!primary) {
-    return `This explanation focuses on the Python symbol \`${symbolName}\` and the nearest relevant scope around the cursor.`;
+    return `Focus on \`${symbolName}\` and its surrounding scope.`;
   }
 
   if (primary.kind === "class") {
-    const fields = fieldMembers(primary);
-    const role = describeSymbolRole(primary);
-    if (fields.length > 0) {
-      const fieldNames = fields.map((field) => `\`${field.name}\``).join(", ");
-      return `\`${primary.name}\` is a ${role} with ${fields.length} field(s): ${fieldNames}.`;
-    }
-    return `\`${primary.name}\` is a ${role}${primary.bases.length ? ` (${primary.bases.join(", ")})` : ""}.`;
+    return buildFieldsTable(primary);
   }
 
   if (primary.docstring) {
-    return `\`${primary.name}\` is a function: ${primary.docstring}`;
+    return primary.docstring;
   }
 
-  return `\`${primary.name}\` is a Python function defined in this file.`;
+  return `\`${primary.name}\` is a Python function in this file.`;
 }
 
 function buildWhyItExists(
@@ -587,30 +596,27 @@ function buildWhyItExists(
   primary: PythonSymbol | undefined,
   references: SourceReference[]
 ): string {
-  const referenceCount = references.length;
-  const callCount = references.filter((reference) => reference.kind === "call").length;
-  const mentionCount = references.filter((reference) => reference.kind === "mention").length;
-
-  if (referenceCount > 0) {
-    const parts = [`Found ${referenceCount} non-definition reference(s)`];
-    if (callCount > 0) {
-      parts.push(`${callCount} call site(s)`);
-    }
-    if (mentionCount > 0) {
-      parts.push(`${mentionCount} type/mention site(s)`);
-    }
-    return `${parts.join(", ")}. This suggests \`${symbolName}\` participates in the current repository flow.`;
+  if (primary?.docstring) {
+    const role = primary.kind === "class" ? describeSymbolRole(primary) : "function";
+    return `${primary.docstring.replace(/\.$/, "")} — ${role} \`${primary.name}\`.`;
   }
 
   if (primary?.kind === "class" && isPydanticLike(primary)) {
-    return `\`${primary.name}\` looks like a local contract/model (Pydantic). No external call sites were found in the bounded scan; it may be used via type annotations, dynamic construction, or neighboring symbols in the same module.`;
+    return `Contract/model that carries structured data for the rest of this module (\`${primary.name}\`).`;
   }
 
   if (primary) {
-    return `No additional non-definition references were found for \`${primary.name}\` in the scanned Python files; explanation is based on the local definition structure.`;
+    if (references.length > 0) {
+      return `\`${primary.name}\` is used elsewhere in the scanned Python files (${references.length} reference(s)).`;
+    }
+    return `Local ${describeSymbolRole(primary)} \`${primary.name}\` defined in this file.`;
   }
 
-  return "No additional non-definition references were found in the scanned Python files, so this explanation is based mostly on local context.";
+  if (symbolName) {
+    return `Local symbol \`${symbolName}\`.`;
+  }
+
+  return "Local code around the cursor.";
 }
 
 function excerptFocusLine(excerpt: string | undefined, symbolHint?: string): string {
@@ -630,21 +636,24 @@ function excerptFocusLine(excerpt: string | undefined, symbolHint?: string): str
 }
 
 function buildCodebaseUsage(references: SourceReference[], primary?: PythonSymbol): string {
+  const continueCue = "Ask about that, or keep moving.";
+
   if (references.length > 0) {
-    return references
+    const usage = references
       .slice(0, 5)
       .map((reference) => {
         const focus = excerptFocusLine(reference.excerpt, primary?.name);
         return `- [${reference.kind ?? "mention"}] ${reference.file}:${reference.line}${focus ? `\n  ${focus}` : ""}`;
       })
       .join("\n");
+    return `${usage}\n\n${continueCue}`;
   }
 
   if (primary) {
-    return `No repository-wide references beyond the definition of \`${primary.name}\` were found in the current bounded scan. Local definition: ${primary.file}:${primary.line}-${primary.endLine}.`;
+    return `Seen mainly via its definition at ${primary.file}:${primary.line}-${primary.endLine}.\n\n${continueCue}`;
   }
 
-  return "No repository-wide references were found in the current bounded scan.";
+  return continueCue;
 }
 
 function buildInferredClaims(
@@ -687,25 +696,21 @@ function buildExplanation(
   primary: PythonSymbol | undefined,
   definitions: SourceReference[],
   references: SourceReference[],
-  containingScopes: PythonSymbol[]
+  _containingScopes: PythonSymbol[]
 ): Explanation {
-  const scopeText =
-    containingScopes.length > 0
-      ? ` inside ${containingScopes.map((scope) => `${scope.kind} \`${scope.name}\``).join(" > ")}`
-      : "";
   const definitionText = definitions[0] ? `${definitions[0].file}:${definitions[0].line}` : `${file}:${line}`;
-
-  const summary = symbolName
+  const shortName = symbolName ?? primary?.name;
+  const summary = shortName
     ? primary
-      ? `Codegraph identified \`${symbolName}\` as a ${describeSymbolRole(primary)} at ${definitionText}.`
-      : `Codegraph identified \`${symbolName}\`${scopeText} and found its best local definition at ${definitionText}.`
-    : `Codegraph assembled bounded local context for ${file}:${line}.`;
+      ? `${shortName} — ${describeSymbolRole(primary)} at ${definitionText}.`
+      : `${shortName} at ${definitionText}.`
+    : `Code around ${file}:${line}.`;
 
   const howItWorks = primary
-    ? buildStructuralHowItWorks(primary)
+    ? buildTutoringHowItWorks(primary)
     : definitions[0]?.excerpt
-      ? `Codegraph captured the local definition excerpt and bounded surrounding lines for analysis.\n\n${definitions[0].excerpt}`
-      : "Codegraph used local file context because no better definition was found yet.";
+      ? definitions[0].excerpt
+      : "Local file context only.";
 
   return {
     summary,
@@ -713,10 +718,7 @@ function buildExplanation(
     howItWorks,
     whyItExists: buildWhyItExists(symbolName, primary, references),
     codebaseUsage: buildCodebaseUsage(references, primary),
-    caveats: [
-      "This MVP uses deterministic local analysis with an AST-backed Python parser when python3 is available.",
-      "Repository-wide reference search is bounded and may miss dynamically generated usages."
-    ],
+    caveats: [],
     confidence: primary || definitions.length > 0 ? (references.length > 0 ? "high" : "medium") : "low",
     sources: dedupeReferences([...definitions, ...references]).slice(0, 8),
     relatedCode: references.slice(0, 5),
