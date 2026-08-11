@@ -102,18 +102,21 @@ wake_cursor_agent() {
   if command -v osascript >/dev/null 2>&1; then
     osascript <<'APPLESCRIPT' >/dev/null 2>&1 || true
 tell application "Cursor" to activate
-delay 0.15
+delay 0.2
 tell application "System Events"
-  keystroke "l" using {command down}
-  delay 0.2
+  -- Focus Agent / Composer (Cursor)
+  keystroke "i" using {command down}
+  delay 0.25
   keystroke "v" using {command down}
+  delay 0.2
+  key code 36 -- Return / submit
 end tell
 APPLESCRIPT
-    log "Woke Cursor (clipboard + Cmd+L/Cmd+V). Paste manually if chat did not receive it."
+    log "Sent prompt to Cursor Agent (Cmd+I, paste, Enter)."
     return
   fi
 
-  log "Wake event ready at $PROMPT_FILE (open Cursor Agent and paste; clipboard used when available)."
+  log "Wake event ready at $PROMPT_FILE (open Agent chat and paste; clipboard used when available)."
 }
 
 state_key() {

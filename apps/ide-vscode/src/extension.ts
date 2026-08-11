@@ -41,6 +41,8 @@ let liveExplainStatusBar: vscode.StatusBarItem | undefined;
 let liveExplainTimer: NodeJS.Timeout | undefined;
 let liveExplainGeneration = 0;
 let extensionContext: vscode.ExtensionContext | undefined;
+let lastAgentHandOffMs = 0;
+let agentChatOpened = false;
 
 function getOutputChannel(): vscode.OutputChannel {
   if (!outputChannel) {
@@ -85,9 +87,13 @@ async function setLiveExplainEnabled(enabled: boolean, announce = true): Promise
   setLiveBridgeEnabled(enabled);
 
   if (announce) {
+    const access = modelAccessConfig();
+    const agentMode = access.useBuiltInAgent && !access.useApiKeyProvider;
     void vscode.window.showInformationMessage(
       enabled
-        ? "Codegraph Live Explain ON — panel updates as you move; agent bridge writes ~/.cursor/codegraph (and learn-codebase compat). Run skills/codegraph/scripts/watch-cursor.sh for agent tutoring."
+        ? agentMode
+          ? "Codegraph Live ON — cursor moves send AST/LSP context to Agent chat (no side panel)."
+          : "Codegraph Live ON — cursor moves enrich in-panel via API key."
         : "Codegraph Live Explain OFF."
     );
   }
@@ -484,24 +490,132 @@ async function enrichViaApiKey(deterministic: SelectionContext): Promise<Enriche
 }
 
 async function enrichViaAgent(
-  deterministic: SelectionContext,
-  options?: { handOff?: boolean }
+  grounded: SelectionContext,
+  options?: { handOff?: boolean; forceNewChat?: boolean }
 ): Promise<EnrichedSelectionContext> {
-  const enriched: EnrichedSelectionContext = {
-    ...deterministic,
+  const handedOff =
+    options?.handOff === false
+      ? false
+      : await handOffToCursorAgent(buildAskAgentQuery(grounded), {
+          forceNew: options?.forceNewChat,
+          submit: true
+        });
+
+  return {
+    ...grounded,
     enrichment: {
-      used: false,
+      used: handedOff,
       provider: "cursor-agent",
       model: "subscription",
-      error: "Enrichment handed off to Cursor/Claude agent (subscription model)."
+      error: handedOff
+        ? "Context sent to Cursor Agent — read the answer in the Agent chat."
+        : "Could not open Cursor Agent. Context is on the clipboard; paste into Agent chat."
     }
   };
+}
 
-  if (options?.handOff !== false) {
-    await handOffToCursorAgent(buildAskAgentQuery(enriched));
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function tryExecuteCommand(command: string, ...args: unknown[]): Promise<boolean> {
+  try {
+    await vscode.commands.executeCommand(command, ...args);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Open/focus Cursor Agent, paste grounded prompt, and submit so the Agent replies
+ * in the Agent window (no Codegraph side panel).
+ */
+async function handOffToCursorAgent(
+  prompt: string,
+  options?: { forceNew?: boolean; submit?: boolean }
+): Promise<boolean> {
+  const previousClipboard = await vscode.env.clipboard.readText();
+  await vscode.env.clipboard.writeText(prompt);
+
+  let opened = false;
+
+  if (options?.forceNew || !agentChatOpened) {
+    const openNew = [
+      "composer.newAgentChat",
+      "aichat.newchataction",
+      "workbench.action.chat.newChat",
+      "workbench.action.chat.open"
+    ];
+    for (const command of openNew) {
+      if (await tryExecuteCommand(command)) {
+        opened = true;
+        agentChatOpened = true;
+        break;
+      }
+      if (await tryExecuteCommand(command, { query: prompt })) {
+        opened = true;
+        agentChatOpened = true;
+        break;
+      }
+    }
+  } else {
+    const focusExisting = [
+      "composer.focusComposer",
+      "aichat.show-ai-chat",
+      "workbench.action.chat.open",
+      "composer.newAgentChat"
+    ];
+    for (const command of focusExisting) {
+      if (await tryExecuteCommand(command)) {
+        opened = true;
+        break;
+      }
+    }
   }
 
-  return enriched;
+  // Give the Agent input focus, then paste.
+  await sleep(350);
+  await tryExecuteCommand("editor.action.clipboardPasteAction");
+  await sleep(120);
+
+  if (options?.submit !== false) {
+    const submitCommands = [
+      "composer.startGeneration",
+      "workbench.action.chat.submit",
+      "composer.submit",
+      "chatEditor.action.submit"
+    ];
+    for (const command of submitCommands) {
+      if (await tryExecuteCommand(command)) {
+        break;
+      }
+    }
+  }
+
+  // Restore prior clipboard after paste/submit has had time to run.
+  setTimeout(() => {
+    void vscode.env.clipboard.writeText(previousClipboard);
+  }, 2000);
+
+  getOutputChannel().appendLine(
+    opened
+      ? "Handed AST/LSP context to Cursor Agent chat (paste + submit)."
+      : "Agent open failed; prompt left on clipboard for manual paste."
+  );
+
+  return opened;
+}
+
+function buildAskAgentQuery(result: SelectionContext | EnrichedSelectionContext): string {
+  return [
+    "Use the Codegraph skill if available.",
+    "AST + LSP context below is grounding only — YOU write the final tutoring explanation in this chat.",
+    "Do not ask for API keys.",
+    "Reply here in the Agent window (learn-codebase style).",
+    "",
+    buildAgentHandoffPrompt(result)
+  ].join("\n");
 }
 
 function dedupeSourceLike(items: SourceLike[]): SourceLike[] {
@@ -584,43 +698,6 @@ async function gatherGroundedContext(
   return mergeLspContext(astContext, lsp);
 }
 
-function buildAskAgentQuery(result: EnrichedSelectionContext): string {
-  return [
-    "Use the Codegraph skill if available.",
-    "You are performing Codegraph enrichment AND explanation via the Cursor/Claude subscription model.",
-    "Do not ask for API keys.",
-    "",
-    buildAgentHandoffPrompt(result)
-  ].join("\n");
-}
-
-async function handOffToCursorAgent(prompt: string): Promise<void> {
-  const candidates: Array<{ command: string; args?: unknown }> = [
-    { command: "workbench.action.chat.open", args: { query: prompt } },
-    { command: "workbench.action.chat.open", args: prompt },
-    { command: "aichat.newchataction" },
-    { command: "composer.newAgentChat" }
-  ];
-
-  for (const candidate of candidates) {
-    try {
-      await vscode.commands.executeCommand(candidate.command, candidate.args);
-      await vscode.env.clipboard.writeText(prompt);
-      void vscode.window.showInformationMessage(
-        "Opened Cursor chat/agent. Grounded Codegraph context is also on your clipboard if you need to paste it."
-      );
-      return;
-    } catch {
-      // try next command
-    }
-  }
-
-  await vscode.env.clipboard.writeText(prompt);
-  void vscode.window.showInformationMessage(
-    "Codegraph context copied. Paste it into Cursor Chat/Agent (no API key needed)."
-  );
-}
-
 async function enrichGroundedContext(
   grounded: SelectionContext,
   options?: { live?: boolean; handOffAgent?: boolean }
@@ -632,9 +709,29 @@ async function enrichGroundedContext(
   }
 
   if (access.useBuiltInAgent) {
-    // Live agent: bridge/watcher delivers the prompt; avoid opening chat every cursor move.
-    const handOff = options?.live ? false : options?.handOffAgent ?? access.autoEnrichOnExplain ?? true;
-    return enrichViaAgent(grounded, { handOff });
+    const now = Date.now();
+    const minGapMs = options?.live ? 3500 : 0;
+    if (options?.live && now - lastAgentHandOffMs < minGapMs) {
+      return {
+        ...grounded,
+        enrichment: {
+          used: false,
+          provider: "cursor-agent",
+          model: "subscription",
+          error: "Live agent handoff throttled — move again shortly or wait for the current Agent reply."
+        }
+      };
+    }
+
+    const shouldHandOff = options?.handOffAgent ?? true;
+    if (shouldHandOff) {
+      lastAgentHandOffMs = now;
+    }
+
+    return enrichViaAgent(grounded, {
+      handOff: shouldHandOff,
+      forceNewChat: !options?.live && !agentChatOpened
+    });
   }
 
   return {
@@ -647,7 +744,7 @@ async function enrichGroundedContext(
 }
 
 async function runAskCursorAgent(
-  context: vscode.ExtensionContext,
+  _context: vscode.ExtensionContext,
   request: { rootPath: string; filePath: string; line: number; selectedText?: string }
 ): Promise<void> {
   const access = modelAccessConfig();
@@ -659,23 +756,21 @@ async function runAskCursorAgent(
   }
 
   const grounded = await gatherGroundedContext(request);
-  const pending: EnrichedSelectionContext = {
-    ...grounded,
-    enrichment: {
-      used: false,
-      provider: "cursor-agent",
-      error: "AST/LSP context ready — waiting for Agent enrichment."
+  currentSession = {
+    request,
+    result: {
+      ...grounded,
+      enrichment: {
+        used: false,
+        provider: "cursor-agent",
+        error: "Sending AST/LSP context to Agent chat…"
+      }
     }
   };
-  currentSession = { request, result: pending };
-  ensurePanel(context);
-  if (panel) {
-    panel.title = `Codegraph Agent: ${request.selectedText ?? `${request.filePath}:${request.line}`}`;
-    panel.webview.html = renderExplanationHtml(request.filePath, request.line, pending);
-    panel.reveal(vscode.ViewColumn.Beside, true);
-  }
 
-  await handOffToCursorAgent(buildAskAgentQuery(pending));
+  // Agent mode: answer appears only in Agent chat — no side panel.
+  lastAgentHandOffMs = Date.now();
+  await enrichViaAgent(grounded, { handOff: true, forceNewChat: true });
 }
 
 async function runExplainSelection(
@@ -686,8 +781,9 @@ async function runExplainSelection(
   const live = Boolean(options?.live);
   const access = modelAccessConfig();
   const generation = liveExplainGeneration;
+  const agentMode = access.useBuiltInAgent && !access.useApiKeyProvider;
 
-  // 1) AST + LSP gather grounded context only (no local tutoring narrative).
+  // 1) AST + LSP gather grounded context only.
   const grounded = await gatherGroundedContext(request);
 
   const bridgePayload = {
@@ -704,37 +800,42 @@ async function runExplainSelection(
     captureEditorState(editor, request, bridgePayload);
   }
 
+  // 2) Agent mode → Agent chat only (no persistent Codegraph panel).
+  //    API key mode → enrich in-panel.
+  if (agentMode) {
+    const result = await enrichGroundedContext(grounded, {
+      live,
+      handOffAgent: options?.handOffAgent ?? true
+    });
+    if (live && generation !== liveExplainGeneration) {
+      return;
+    }
+    currentSession = { request, result };
+    getOutputChannel().appendLine(
+      `Agent handoff ${result.enrichment.used ? "ok" : "pending"} for ${request.filePath}:${request.line}`
+    );
+    return;
+  }
+
   const pending: EnrichedSelectionContext = {
     ...grounded,
     enrichment: {
       used: false,
-      provider: access.useApiKeyProvider ? "openai-compatible" : access.useBuiltInAgent ? "cursor-agent" : undefined,
-      error: access.useApiKeyProvider
-        ? "AST/LSP context ready — enriching via API key…"
-        : access.useBuiltInAgent
-          ? "AST/LSP context ready — waiting for Agent enrichment (bridge updated)."
-          : "AST/LSP context only. Enable Agent or API key for the final explanation."
+      provider: "openai-compatible",
+      error: "AST/LSP context ready — enriching via API key…"
     }
   };
 
   currentSession = { request, result: pending };
   renderExplainPanel(context, request, pending, { live, announce: false });
 
-  // 2) Model/Agent produces the final explanation.
-  const result = await enrichGroundedContext(grounded, {
-    live,
-    handOffAgent: options?.handOffAgent ?? (!live && access.useBuiltInAgent)
-  });
-
+  const result = await enrichGroundedContext(grounded, { live, handOffAgent: false });
   if (live && generation !== liveExplainGeneration) {
     return;
   }
 
   currentSession = { request, result };
-  renderExplainPanel(context, request, result, {
-    live,
-    announce: !live
-  });
+  renderExplainPanel(context, request, result, { live, announce: false });
 }
 
 function renderExplainPanel(
@@ -884,8 +985,8 @@ async function handlePanelMessage(message: unknown): Promise<void> {
 
     void vscode.window.showInformationMessage(
       useApiKeyProvider
-        ? "Codegraph will use API key provider for final enrichment."
-        : "Codegraph will use Cursor/Claude agent for final enrichment."
+        ? "API key mode: enriched answers show in the Codegraph panel."
+        : "Agent mode: answers show in Cursor Agent chat (no side panel)."
     );
   }
 }

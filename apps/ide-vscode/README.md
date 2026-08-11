@@ -29,13 +29,14 @@ cursor --install-extension ./artifacts/codegraph-extension.vsix
 
 Turn it on **once**, then keep coding — no Command Palette on every symbol.
 
-1. Click the status bar **Codegraph Live: OFF** (or run **Codegraph: Toggle Live Explain Mode** once).
-2. Open a Python file.
-3. Move the cursor or select a symbol — the side panel updates automatically with deterministic facts/sources.
-4. For **Agent tutoring**, run `skills/codegraph/scripts/watch-cursor.sh` and say `Start Codegraph live tutoring`.
-5. For **API key mode**, enable the API key checkbox + configure `codegraph.enrichment.apiKey` — Live Explain enriches the same sections in-panel automatically.
+**Agent mode (default):** AST/LSP context is sent to **Cursor Agent chat**. The answer appears there — no persistent Codegraph side panel.
 
-Both modes target the same section set: Summary, What it does, Purpose/use, How it works, In this codebase, Sources.
+**API key mode:** AST/LSP context is enriched in the Codegraph panel.
+
+1. Status bar **Codegraph Live: OFF** → ON (or Toggle Live Explain once).
+2. Open a Python file and move the cursor / select a symbol.
+3. Agent mode: watch Agent chat for the tutoring reply.
+4. API key mode: panel shows Purpose / Fields / Notes after enrichment.
 
 Settings:
 
