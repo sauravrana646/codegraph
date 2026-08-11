@@ -102,13 +102,15 @@ function writePendingPrompt(
     `languageId: ${state.languageId}`,
     ...groundedBlock,
     "Respond exactly like learn-codebase:",
+    "AST/LSP evidence above is CONTEXT ONLY — you write the final tutoring explanation.",
     "1. Location + short code citation",
     "2. Purpose: one concrete paragraph",
     "3. Fields table (Field | Meaning)",
     "4. Valid shapes / examples when useful",
     "5. Docstring/validator notes",
     "6. End with: Ask about that, or keep moving.",
-    "Cite only tool/fact file:line sources."
+    "Cite only tool/fact file:line sources.",
+    "Do not dump raw AST facts to the user."
   ].join("\n");
   fs.writeFileSync(path.join(dir, "pending-prompt.md"), `${prompt}\n`, "utf8");
 }

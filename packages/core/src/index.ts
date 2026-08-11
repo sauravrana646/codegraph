@@ -5,7 +5,6 @@ import { parsePythonFile, type PythonAstMember, type PythonAstSymbol } from "@co
 import type {
   ContextBundle,
   Explanation,
-  InferredClaim,
   LogicalSectionDepth,
   ReferenceKind,
   ResolutionMetadata,
@@ -457,14 +456,6 @@ function detectStatementBlock(lines: string[], lineNumber: number): { startLine:
   };
 }
 
-function isPydanticLike(symbol: PythonSymbol): boolean {
-  return symbol.bases.some((base) => /BaseModel\b|BaseSettings\b|BaseConfig\b/.test(base));
-}
-
-function isDataclassLike(symbol: PythonSymbol): boolean {
-  return symbol.decorators.some((decorator) => /dataclass\b/.test(decorator));
-}
-
 function fieldMembers(symbol: PythonSymbol): PythonAstMember[] {
   return symbol.members.filter((member) => member.kind === "field");
 }
@@ -481,142 +472,9 @@ function validatorMethods(symbol: PythonSymbol): PythonAstMember[] {
   );
 }
 
-function describeSymbolRole(symbol: PythonSymbol): string {
-  if (symbol.kind === "class") {
-    if (isPydanticLike(symbol)) {
-      return "Pydantic model class";
-    }
-    if (isDataclassLike(symbol)) {
-      return "dataclass";
-    }
-    return "Python class";
-  }
-
-  return "Python function";
-}
-
 function formatMethod(member: PythonAstMember): string {
   const decorators = (member.decorators ?? []).length > 0 ? `@${(member.decorators ?? []).join(", @")} ` : "";
   return `${decorators}${member.name}()`;
-}
-
-function fieldMeaningHint(member: PythonAstMember): string {
-  const annotation = member.annotation?.trim();
-  const value = member.value?.trim() ?? "";
-  const descriptionMatch = value.match(/description\s*=\s*['"]([^'"]+)['"]/);
-  if (descriptionMatch?.[1]) {
-    return descriptionMatch[1];
-  }
-
-  if (annotation?.includes("None")) {
-    return `optional ${annotation}`;
-  }
-
-  if (value.includes("Field(")) {
-    return annotation ? `${annotation} (Field-constrained)` : "Field-constrained value";
-  }
-
-  return annotation || "declared member";
-}
-
-function buildFieldsTable(symbol: PythonSymbol): string {
-  const fields = fieldMembers(symbol);
-  if (fields.length === 0) {
-    return "No declared fields on this symbol.";
-  }
-
-  const rows = fields
-    .slice(0, 16)
-    .map((field) => `| ${field.name} | ${fieldMeaningHint(field).replace(/\|/g, "/")} |`)
-    .join("\n");
-
-  return `| Field | Meaning |\n| --- | --- |\n${rows}`;
-}
-
-function buildTutoringHowItWorks(symbol: PythonSymbol): string {
-  const parts: string[] = [];
-
-  if (symbol.docstring) {
-    parts.push(`Docstring note: ${symbol.docstring}`);
-  }
-
-  const validators = validatorMethods(symbol);
-  if (validators.length > 0) {
-    parts.push("Validators:");
-    for (const method of validators.slice(0, 8)) {
-      parts.push(`- ${formatMethod(method)}`);
-    }
-  }
-
-  const methods = methodMembers(symbol).filter(
-    (member) => !validators.some((validator) => validator.name === member.name)
-  );
-  if (methods.length > 0) {
-    parts.push("Methods:");
-    for (const method of methods.slice(0, 8)) {
-      parts.push(`- ${formatMethod(method)}`);
-    }
-  }
-
-  if (symbol.kind === "class" && isPydanticLike(symbol)) {
-    parts.push(
-      "Two common shapes: populate required fields for a normal instance; when optional/nullable fields are None, check nearby validators for enforced alternatives."
-    );
-  }
-
-  if (parts.length === 0) {
-    parts.push(symbol.excerpt);
-  }
-
-  return parts.join("\n");
-}
-
-function buildWhatItDoes(symbolName: string | undefined, primary?: PythonSymbol): string {
-  if (!symbolName) {
-    return "Nearest code around the cursor.";
-  }
-
-  if (!primary) {
-    return `Focus on \`${symbolName}\` and its surrounding scope.`;
-  }
-
-  if (primary.kind === "class") {
-    return buildFieldsTable(primary);
-  }
-
-  if (primary.docstring) {
-    return primary.docstring;
-  }
-
-  return `\`${primary.name}\` is a Python function in this file.`;
-}
-
-function buildWhyItExists(
-  symbolName: string | undefined,
-  primary: PythonSymbol | undefined,
-  references: SourceReference[]
-): string {
-  if (primary?.docstring) {
-    const role = primary.kind === "class" ? describeSymbolRole(primary) : "function";
-    return `${primary.docstring.replace(/\.$/, "")} — ${role} \`${primary.name}\`.`;
-  }
-
-  if (primary?.kind === "class" && isPydanticLike(primary)) {
-    return `Contract/model that carries structured data for the rest of this module (\`${primary.name}\`).`;
-  }
-
-  if (primary) {
-    if (references.length > 0) {
-      return `\`${primary.name}\` is used elsewhere in the scanned Python files (${references.length} reference(s)).`;
-    }
-    return `Local ${describeSymbolRole(primary)} \`${primary.name}\` defined in this file.`;
-  }
-
-  if (symbolName) {
-    return `Local symbol \`${symbolName}\`.`;
-  }
-
-  return "Local code around the cursor.";
 }
 
 function excerptFocusLine(excerpt: string | undefined, symbolHint?: string): string {
@@ -635,60 +493,57 @@ function excerptFocusLine(excerpt: string | undefined, symbolHint?: string): str
   return (lines[Math.floor(lines.length / 2)] ?? lines[0] ?? "").trim();
 }
 
-function buildCodebaseUsage(references: SourceReference[], primary?: PythonSymbol): string {
-  const continueCue = "Ask about that, or keep moving.";
-
-  if (references.length > 0) {
-    const usage = references
-      .slice(0, 5)
-      .map((reference) => {
-        const focus = excerptFocusLine(reference.excerpt, primary?.name);
-        return `- [${reference.kind ?? "mention"}] ${reference.file}:${reference.line}${focus ? `\n  ${focus}` : ""}`;
-      })
-      .join("\n");
-    return `${usage}\n\n${continueCue}`;
+function buildAstFactBlock(primary: PythonSymbol | undefined): string {
+  if (!primary) {
+    return "AST: no symbol structure resolved.";
   }
 
-  if (primary) {
-    return `Seen mainly via its definition at ${primary.file}:${primary.line}-${primary.endLine}.\n\n${continueCue}`;
+  const lines = [
+    `AST symbol: ${primary.name}`,
+    `kind: ${primary.kind}`,
+    `span: ${primary.file}:${primary.line}-${primary.endLine}`,
+    `bases: ${primary.bases.join(", ") || "(none)"}`,
+    `decorators: ${primary.decorators.join(", ") || "(none)"}`,
+    `docstring: ${primary.docstring || "(none)"}`
+  ];
+
+  const fields = fieldMembers(primary);
+  if (fields.length > 0) {
+    lines.push("fields:");
+    for (const field of fields.slice(0, 20)) {
+      lines.push(
+        `- ${field.name}${field.annotation ? `: ${field.annotation}` : ""}${field.value ? ` = ${field.value}` : ""}`
+      );
+    }
   }
 
-  return continueCue;
+  const validators = validatorMethods(primary);
+  if (validators.length > 0) {
+    lines.push("validators:");
+    for (const method of validators.slice(0, 12)) {
+      lines.push(`- ${formatMethod(method)}`);
+    }
+  }
+
+  const methods = methodMembers(primary).filter(
+    (member) => !validators.some((validator) => validator.name === member.name)
+  );
+  if (methods.length > 0) {
+    lines.push("methods:");
+    for (const method of methods.slice(0, 12)) {
+      lines.push(`- ${formatMethod(method)}`);
+    }
+  }
+
+  lines.push("definition_excerpt:");
+  lines.push(primary.excerpt);
+  return lines.join("\n");
 }
 
-function buildInferredClaims(
-  symbolName: string,
-  primary: PythonSymbol | undefined,
-  definitions: SourceReference[],
-  references: SourceReference[]
-): InferredClaim[] {
-  const claims: InferredClaim[] = [];
-
-  if (primary?.kind === "class" && isPydanticLike(primary)) {
-    const fields = fieldMembers(primary);
-    const validators = validatorMethods(primary);
-    claims.push({
-      claim: `${symbolName} is a Pydantic BaseModel${fields.length ? ` with ${fields.length} declared field(s)` : ""}${validators.length ? ` and ${validators.length} validator(s)` : ""}.`,
-      confidence: "high",
-      evidence: definitions.slice(0, 1)
-    });
-  }
-
-  if (definitions.length > 0 && references.length > 0) {
-    const callCount = references.filter((reference) => reference.kind === "call").length;
-    claims.push({
-      claim:
-        callCount > 0
-          ? `${symbolName} appears to be actively called in the current repository.`
-          : `${symbolName} appears to be referenced in the current repository.`,
-      confidence: references.length > 2 ? "high" : "medium",
-      evidence: [...definitions.slice(0, 1), ...references.slice(0, 2)]
-    });
-  }
-
-  return claims;
-}
-
+/**
+ * Deterministic layer is context-only.
+ * Narrative tutoring fields stay empty so LLM/Agent must produce the final explanation.
+ */
 function buildExplanation(
   file: string,
   line: number,
@@ -698,31 +553,26 @@ function buildExplanation(
   references: SourceReference[],
   _containingScopes: PythonSymbol[]
 ): Explanation {
-  const definitionText = definitions[0] ? `${definitions[0].file}:${definitions[0].line}` : `${file}:${line}`;
   const shortName = symbolName ?? primary?.name;
-  const summary = shortName
-    ? primary
-      ? `${shortName} — ${describeSymbolRole(primary)} at ${definitionText}.`
-      : `${shortName} at ${definitionText}.`
-    : `Code around ${file}:${line}.`;
-
-  const howItWorks = primary
-    ? buildTutoringHowItWorks(primary)
-    : definitions[0]?.excerpt
-      ? definitions[0].excerpt
-      : "Local file context only.";
+  const definitionText = definitions[0] ? `${definitions[0].file}:${definitions[0].line}` : `${file}:${line}`;
 
   return {
-    summary,
-    whatItDoes: buildWhatItDoes(symbolName, primary),
-    howItWorks,
-    whyItExists: buildWhyItExists(symbolName, primary, references),
-    codebaseUsage: buildCodebaseUsage(references, primary),
+    summary: shortName ? `${shortName} @ ${definitionText}` : `${file}:${line}`,
+    whatItDoes: "",
+    howItWorks: buildAstFactBlock(primary),
+    whyItExists: "",
+    codebaseUsage: references
+      .slice(0, 12)
+      .map((reference) => {
+        const focus = excerptFocusLine(reference.excerpt, shortName);
+        return `- [${reference.kind ?? "mention"}] ${reference.file}:${reference.line}${focus ? `\n  ${focus}` : ""}`;
+      })
+      .join("\n"),
     caveats: [],
     confidence: primary || definitions.length > 0 ? (references.length > 0 ? "high" : "medium") : "low",
-    sources: dedupeReferences([...definitions, ...references]).slice(0, 8),
-    relatedCode: references.slice(0, 5),
-    inferredClaims: symbolName ? buildInferredClaims(symbolName, primary, definitions, references) : []
+    sources: dedupeReferences([...definitions, ...references]).slice(0, 12),
+    relatedCode: references.slice(0, 8),
+    inferredClaims: []
   };
 }
 

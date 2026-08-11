@@ -15,6 +15,7 @@ import { redactSecrets } from "@codegraph/security";
 import { normalizeWorkspacePath } from "@codegraph/workspace";
 
 import { captureEditorState, setLiveBridgeEnabled } from "./liveBridge";
+import { gatherIdeLspContext, type LspGatherResult } from "./lspGather";
 
 type SelectionContext = Awaited<ReturnType<typeof buildSelectionContext>>;
 type EnrichedSelectionContext = GatewayEnrichedSelectionContext;
@@ -503,47 +504,84 @@ async function enrichViaAgent(
   return enriched;
 }
 
-async function maybeEnrichSelection(
-  deterministic: SelectionContext,
-  options?: { handOffAgent?: boolean; live?: boolean }
-): Promise<EnrichedSelectionContext> {
-  const access = modelAccessConfig();
-
-  // Live mode must stay in-panel. Never open Agent chat on every cursor move.
-  if (options?.live) {
-    if (access.useApiKeyProvider) {
-      return enrichViaApiKey(deterministic);
+function dedupeSourceLike(items: SourceLike[]): SourceLike[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = `${item.file}:${item.line}`;
+    if (seen.has(key)) {
+      return false;
     }
+    seen.add(key);
+    return true;
+  });
+}
 
-    return {
-      ...deterministic,
-      enrichment: {
-        used: false,
-        provider: access.useBuiltInAgent ? "cursor-agent" : undefined,
-        error: access.useBuiltInAgent
-          ? "Live Explain shows deterministic facts in-panel and writes the agent bridge (~/.cursor/codegraph). Run watch-cursor.sh for live Agent tutoring."
-          : "Live Explain shows deterministic facts only."
-      }
-    };
-  }
+function mergeLspContext(result: SelectionContext, lsp: LspGatherResult): SelectionContext {
+  const lspDefinitions = lsp.definitions.map((item) => ({
+    file: item.file,
+    line: item.line,
+    excerpt: item.excerpt,
+    kind: "definition" as const,
+    score: 110
+  }));
+  const lspReferences = lsp.references.map((item) => ({
+    file: item.file,
+    line: item.line,
+    excerpt: item.excerpt,
+    kind: "mention" as const,
+    score: 70
+  }));
 
-  if (access.useApiKeyProvider) {
-    return enrichViaApiKey(deterministic);
-  }
-
-  if (access.useBuiltInAgent) {
-    return enrichViaAgent(deterministic, {
-      handOff: options?.handOffAgent ?? access.autoEnrichOnExplain
-    });
-  }
+  const definitions = dedupeSourceLike([...lspDefinitions, ...result.context.definitions]);
+  const references = dedupeSourceLike([...lspReferences, ...result.context.references]).filter(
+    (reference) => !definitions.some((definition) => definition.file === reference.file && definition.line === reference.line)
+  );
+  const sources = dedupeSourceLike([...definitions, ...references]).slice(0, 12);
+  const hoverBlock = lsp.hoverText ? `\n\nLSP hover:\n${lsp.hoverText}` : "";
 
   return {
-    ...deterministic,
-    enrichment: {
-      used: false,
-      error: "Model access disabled. Enable Built-in Agent or API Key Provider."
+    ...result,
+    context: {
+      ...result.context,
+      definitions,
+      references,
+      relatedFiles: references
+    },
+    metadata: {
+      ...result.metadata,
+      source: lsp.used ? "ide_lsp" : result.metadata.source,
+      capabilityTier: lsp.used ? 3 : result.metadata.capabilityTier,
+      confidence: Math.max(result.metadata.confidence, lsp.used ? 0.9 : 0)
+    },
+    explanation: {
+      ...result.explanation,
+      howItWorks: `${result.explanation.howItWorks || ""}${hoverBlock}`.trim(),
+      codebaseUsage: [
+        result.explanation.codebaseUsage,
+        ...lspReferences.slice(0, 8).map((item) => `- [lsp] ${item.file}:${item.line}`)
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      sources,
+      relatedCode: references.slice(0, 8),
+      // Keep narrative empty until model enrichment.
+      whatItDoes: "",
+      whyItExists: ""
     }
   };
+}
+
+async function gatherGroundedContext(
+  request: { rootPath: string; filePath: string; line: number; selectedText?: string }
+): Promise<SelectionContext> {
+  const astContext = await buildSelectionContext(request);
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) {
+    return astContext;
+  }
+
+  const lsp = await gatherIdeLspContext(editor, request.rootPath);
+  return mergeLspContext(astContext, lsp);
 }
 
 function buildAskAgentQuery(result: EnrichedSelectionContext): string {
@@ -583,6 +621,31 @@ async function handOffToCursorAgent(prompt: string): Promise<void> {
   );
 }
 
+async function enrichGroundedContext(
+  grounded: SelectionContext,
+  options?: { live?: boolean; handOffAgent?: boolean }
+): Promise<EnrichedSelectionContext> {
+  const access = modelAccessConfig();
+
+  if (access.useApiKeyProvider) {
+    return enrichViaApiKey(grounded);
+  }
+
+  if (access.useBuiltInAgent) {
+    // Live agent: bridge/watcher delivers the prompt; avoid opening chat every cursor move.
+    const handOff = options?.live ? false : options?.handOffAgent ?? access.autoEnrichOnExplain ?? true;
+    return enrichViaAgent(grounded, { handOff });
+  }
+
+  return {
+    ...grounded,
+    enrichment: {
+      used: false,
+      error: "Enable Built-in Agent or API Key Provider — AST/LSP context alone is not the final explanation."
+    }
+  };
+}
+
 async function runAskCursorAgent(
   context: vscode.ExtensionContext,
   request: { rootPath: string; filePath: string; line: number; selectedText?: string }
@@ -595,28 +658,24 @@ async function runAskCursorAgent(
     return;
   }
 
-  let result = currentSession?.result;
-  const sameTarget =
-    currentSession &&
-    currentSession.request.rootPath === request.rootPath &&
-    currentSession.request.filePath === request.filePath &&
-    currentSession.request.line === request.line;
-
-  if (!result || !sameTarget) {
-    const deterministic = await buildSelectionContext(request);
-    result = await maybeEnrichSelection(deterministic, { handOffAgent: false });
-  }
-
-  currentSession = { request, result };
+  const grounded = await gatherGroundedContext(request);
+  const pending: EnrichedSelectionContext = {
+    ...grounded,
+    enrichment: {
+      used: false,
+      provider: "cursor-agent",
+      error: "AST/LSP context ready — waiting for Agent enrichment."
+    }
+  };
+  currentSession = { request, result: pending };
   ensurePanel(context);
-
   if (panel) {
     panel.title = `Codegraph Agent: ${request.selectedText ?? `${request.filePath}:${request.line}`}`;
-    panel.webview.html = renderExplanationHtml(request.filePath, request.line, result);
+    panel.webview.html = renderExplanationHtml(request.filePath, request.line, pending);
     panel.reveal(vscode.ViewColumn.Beside, true);
   }
 
-  await handOffToCursorAgent(buildAskAgentQuery(result));
+  await handOffToCursorAgent(buildAskAgentQuery(pending));
 }
 
 async function runExplainSelection(
@@ -627,64 +686,45 @@ async function runExplainSelection(
   const live = Boolean(options?.live);
   const access = modelAccessConfig();
   const generation = liveExplainGeneration;
-  const deterministic = await buildSelectionContext(request);
 
-  const grounded = {
-    summary: deterministic.explanation.summary,
-    whatItDoes: deterministic.explanation.whatItDoes,
-    whyItExists: deterministic.explanation.whyItExists,
-    howItWorks: deterministic.explanation.howItWorks,
-    codebaseUsage: deterministic.explanation.codebaseUsage,
-    sources: (deterministic.explanation.sources ?? []).map(
-      (source) => `${source.file}:${source.line}`
-    )
+  // 1) AST + LSP gather grounded context only (no local tutoring narrative).
+  const grounded = await gatherGroundedContext(request);
+
+  const bridgePayload = {
+    summary: grounded.explanation.summary,
+    whatItDoes: grounded.explanation.whatItDoes,
+    whyItExists: grounded.explanation.whyItExists,
+    howItWorks: grounded.explanation.howItWorks,
+    codebaseUsage: grounded.explanation.codebaseUsage,
+    sources: (grounded.explanation.sources ?? []).map((source) => `${source.file}:${source.line}`)
   };
 
-  // Refresh agent bridge with grounded facts so BOTH agent and API-key paths
-  // share the same section-complete context.
   const editor = vscode.window.activeTextEditor;
   if (live && editor) {
-    captureEditorState(editor, request, grounded);
+    captureEditorState(editor, request, bridgePayload);
   }
 
-  const pendingEnrichment: EnrichedSelectionContext = {
-    ...deterministic,
+  const pending: EnrichedSelectionContext = {
+    ...grounded,
     enrichment: {
       used: false,
       provider: access.useApiKeyProvider ? "openai-compatible" : access.useBuiltInAgent ? "cursor-agent" : undefined,
       error: access.useApiKeyProvider
-        ? "Enriching narrative sections via API key provider…"
+        ? "AST/LSP context ready — enriching via API key…"
         : access.useBuiltInAgent
-          ? "Deterministic sections ready. Agent bridge updated for live tutoring (all sections required)."
-          : "Deterministic sections only."
+          ? "AST/LSP context ready — waiting for Agent enrichment (bridge updated)."
+          : "AST/LSP context only. Enable Agent or API key for the final explanation."
     }
   };
 
-  // Show deterministic panel immediately (all structural sections already filled).
-  currentSession = { request, result: pendingEnrichment };
-  renderExplainPanel(context, request, pendingEnrichment, { live, announce: false });
+  currentSession = { request, result: pending };
+  renderExplainPanel(context, request, pending, { live, announce: false });
 
-  // API key path: enrich in-panel for BOTH live and one-shot explains.
-  // Agent path: live stays in-panel + bridge; one-shot may hand off.
-  let result: EnrichedSelectionContext;
-  if (access.useApiKeyProvider) {
-    result = await enrichViaApiKey(deterministic);
-  } else if (live) {
-    result = {
-      ...deterministic,
-      enrichment: {
-        used: false,
-        provider: "cursor-agent",
-        error:
-          "Live Explain: panel shows full deterministic sections; agent bridge/pending-prompt asks Agent for the same sections (purpose/use, what it does, how, usages)."
-      }
-    };
-  } else {
-    result = await maybeEnrichSelection(deterministic, {
-      live: false,
-      handOffAgent: options?.handOffAgent
-    });
-  }
+  // 2) Model/Agent produces the final explanation.
+  const result = await enrichGroundedContext(grounded, {
+    live,
+    handOffAgent: options?.handOffAgent ?? (!live && access.useBuiltInAgent)
+  });
 
   if (live && generation !== liveExplainGeneration) {
     return;
@@ -822,10 +862,7 @@ async function handlePanelMessage(message: unknown): Promise<void> {
     let useBuiltInAgent = Boolean(parsed.useBuiltInAgent);
     let useApiKeyProvider = Boolean(parsed.useApiKeyProvider);
 
-    // Mutual exclusion: one generative path at a time.
     if (useApiKeyProvider && useBuiltInAgent) {
-      // Prefer whichever checkbox the user just enabled if we can detect it;
-      // otherwise prefer API key when both true from the message.
       useBuiltInAgent = false;
     }
     if (!useApiKeyProvider && !useBuiltInAgent) {
@@ -838,29 +875,17 @@ async function handlePanelMessage(message: unknown): Promise<void> {
       .getConfiguration("codegraph.enrichment")
       .update("enabled", useApiKeyProvider, vscode.ConfigurationTarget.Workspace);
 
-    if (panel && currentSession) {
-      // Re-run enrichment for the current session under the new mode.
-      const deterministic: SelectionContext = {
-        workspace: currentSession.result.workspace,
-        context: currentSession.result.context,
-        metadata: currentSession.result.metadata,
-        explanation: currentSession.result.explanation
-      };
-      const refreshed = await maybeEnrichSelection(deterministic, {
-        handOffAgent: useBuiltInAgent && modelAccessConfig().autoEnrichOnExplain
+    if (panel && currentSession && extensionContext) {
+      await runExplainSelection(extensionContext, currentSession.request, {
+        live: liveExplainEnabled,
+        handOffAgent: false
       });
-      currentSession = { request: currentSession.request, result: refreshed };
-      panel.webview.html = renderExplanationHtml(
-        currentSession.request.filePath,
-        currentSession.request.line,
-        refreshed
-      );
     }
 
     void vscode.window.showInformationMessage(
       useApiKeyProvider
-        ? "Codegraph will use API key provider for enrichment."
-        : "Codegraph will use Cursor/Claude agent for enrichment + explanation."
+        ? "Codegraph will use API key provider for final enrichment."
+        : "Codegraph will use Cursor/Claude agent for final enrichment."
     );
   }
 }
@@ -973,14 +998,46 @@ function renderExplanationHtml(
       ? definition.line + Math.max(0, definition.excerpt.split("\n").length - 1)
       : line;
   const locationLabel = `${shortFileLabel(filePath)} line ${line}`;
+  const enriched = Boolean(result.enrichment?.used);
+  const title =
+    (enriched ? result.explanation.summary : result.context.target.selectedText) ||
+    result.explanation.summary ||
+    "Codegraph";
   const continueText =
     result.explanation.codebaseUsage?.split("\n").filter(Boolean).at(-1)?.includes("keep moving")
       ? result.explanation.codebaseUsage.split("\n").filter(Boolean).at(-1)
       : "Ask about that, or keep moving.";
   const usageBody = (result.explanation.codebaseUsage ?? "")
     .split("\n")
-    .filter((entry) => entry.trim() && !entry.includes("keep moving"))
+    .filter((entry) => entry.trim() && !entry.includes("keep moving") && !entry.startsWith("- [lsp]"))
     .join("\n");
+  const resolution = `${result.metadata.source} · tier ${result.metadata.capabilityTier}`;
+
+  const body = enriched
+    ? `
+      <h2>Purpose</h2>
+      ${renderMarkdownLite(result.explanation.whyItExists)}
+
+      <h2>Fields</h2>
+      ${renderMarkdownLite(result.explanation.whatItDoes)}
+
+      <h2>Notes</h2>
+      ${renderMarkdownLite(result.explanation.howItWorks)}
+
+      ${usageBody.trim() ? `<h2>In this codebase</h2>${renderMarkdownLite(usageBody)}` : ""}
+
+      <p class="continue">${escapeHtml(continueText ?? "Ask about that, or keep moving.")}</p>
+    `
+    : `
+      <p class="pending">Gathered AST/LSP context. Waiting for ${
+        result.enrichment?.provider === "openai-compatible" ? "API enrichment" : "Agent enrichment"
+      } — that model writes the final tutoring explanation.</p>
+      <p class="muted">${escapeHtml(result.enrichment?.error || "")}</p>
+      <details>
+        <summary class="muted">Raw grounded context</summary>
+        <pre>${escapeHtml(result.explanation.howItWorks || "")}</pre>
+      </details>
+    `;
 
   return `<!DOCTYPE html>
   <html lang="en">
@@ -1013,6 +1070,9 @@ function renderExplanationHtml(
           color: var(--vscode-descriptionForeground);
           font-size: 0.92rem;
         }
+        .pending {
+          margin: 12px 0;
+        }
         .code-card {
           margin: 0 0 14px;
           border: 1px solid var(--vscode-input-border, transparent);
@@ -1029,7 +1089,7 @@ function renderExplanationHtml(
           color: var(--vscode-descriptionForeground);
           border-bottom: 1px solid var(--vscode-input-border, transparent);
         }
-        .code-card pre {
+        .code-card pre, details pre {
           margin: 0;
           padding: 10px;
           white-space: pre-wrap;
@@ -1064,9 +1124,7 @@ function renderExplanationHtml(
           margin: 0;
           padding-left: 1.2rem;
         }
-        p {
-          margin: 0 0 8px;
-        }
+        p { margin: 0 0 8px; }
         .continue {
           margin-top: 22px;
           color: var(--vscode-descriptionForeground);
@@ -1086,11 +1144,14 @@ function renderExplanationHtml(
           font: inherit;
           text-decoration: underline;
         }
+        details {
+          margin-top: 12px;
+        }
       </style>
     </head>
     <body>
-      <h1>${escapeHtml(result.context.target.selectedText || result.explanation.summary.split("—")[0]?.trim() || "Codegraph")}</h1>
-      <p class="location">${escapeHtml(locationLabel)}</p>
+      <h1>${escapeHtml(title)}</h1>
+      <p class="location">${escapeHtml(locationLabel)} · ${escapeHtml(resolution)}</p>
 
       ${
         definition?.excerpt
@@ -1106,22 +1167,8 @@ function renderExplanationHtml(
           : ""
       }
 
-      <h2>Purpose</h2>
-      ${renderMarkdownLite(result.explanation.whyItExists)}
+      ${body}
 
-      <h2>Fields</h2>
-      ${renderMarkdownLite(result.explanation.whatItDoes)}
-
-      <h2>Notes</h2>
-      ${renderMarkdownLite(result.explanation.howItWorks)}
-
-      ${
-        usageBody.trim()
-          ? `<h2>In this codebase</h2>${renderMarkdownLite(usageBody)}`
-          : ""
-      }
-
-      <p class="continue">${escapeHtml(continueText ?? "Ask about that, or keep moving.")}</p>
       <p class="footer">
         Live ${liveExplainEnabled ? "on" : "off"} ·
         <button data-action="toggleLiveExplain">${liveExplainEnabled ? "turn off" : "turn on"}</button>

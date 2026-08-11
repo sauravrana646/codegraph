@@ -15,6 +15,13 @@ Use Codegraph to build **bounded, source-grounded** understanding of local code 
 
 Prefer Codegraph over guessing from a few open files when the user asks what code does, where a symbol is defined/used, or how a section fits in the repo.
 
+## Architecture (important)
+
+1. **AST + LSP** gather grounded context only (definitions, references, symbol structure, hover).
+2. That context enriches the prompt.
+3. **API key LLM or Cursor Agent** writes the final tutoring explanation.
+4. Local/heuristic narrative is **not** the user-facing answer.
+
 ## Live tutoring (start / stop / cursor-move)
 
 This matches the local **learn-codebase** interaction model: toggle once, then keep moving — Agent explains as you go.
