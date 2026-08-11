@@ -1,7 +1,7 @@
 {
   "name": "codegraph-ide-vscode",
   "displayName": "Codegraph",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "private": true,
   "publisher": "codegraph",
   "description": "Python-first codebase intelligence extension for VS Code and Cursor.",
@@ -34,36 +34,13 @@
     "onCommand:codegraph.askCursorAgent",
     "onCommand:codegraph.toggleLiveExplain",
     "onCommand:codegraph.diagnoseLiveExplain",
-    "onCommand:codegraph.findDefinition",
-    "onCommand:codegraph.findUsages",
     "onCommand:codegraph.configureApiProvider",
     "onCommand:codegraph.testApiConnection",
     "onCommand:codegraph.repoBrief",
-    "onCommand:codegraph.setExplainDepth",
-    "onCommand:codegraph.showSidebar",
-    "onView:codegraph.sidebar"
+    "onCommand:codegraph.setExplainDepth"
   ],
   "main": "./dist/extension.js",
   "contributes": {
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "codegraph",
-          "title": "Codegraph",
-          "icon": "media/icon.svg"
-        }
-      ]
-    },
-    "views": {
-      "codegraph": [
-        {
-          "type": "webview",
-          "id": "codegraph.sidebar",
-          "name": "Jump",
-          "contextualTitle": "Codegraph Jump"
-        }
-      ]
-    },
     "commands": [
       {
         "command": "codegraph.toggleLiveExplain",
@@ -82,14 +59,6 @@
         "title": "Codegraph: Enrich & Explain with Agent"
       },
       {
-        "command": "codegraph.findDefinition",
-        "title": "Codegraph: Find Definition"
-      },
-      {
-        "command": "codegraph.findUsages",
-        "title": "Codegraph: Find Usages"
-      },
-      {
         "command": "codegraph.configureApiProvider",
         "title": "Codegraph: Configure API Provider"
       },
@@ -104,10 +73,6 @@
       {
         "command": "codegraph.setExplainDepth",
         "title": "Codegraph: Set Explain Depth"
-      },
-      {
-        "command": "codegraph.showSidebar",
-        "title": "Codegraph: Show Jump Sidebar"
       }
     ],
     "configuration": {

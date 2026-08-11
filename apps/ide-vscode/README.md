@@ -33,8 +33,6 @@ Turn Live ON once, then **only move your cursor** — no typing, no Enter.
 
 **Status bar (left):** `CG Live: ON/OFF` toggles Live Explain; `CG Depth: Short|Standard|Deep` sets answer depth.
 
-**Jump list:** in the **Codegraph activity-bar sidebar** (graph icon on the left) — not Agent chat and not an editor tab. Definitions / Usages open `file:line`. Command: **Codegraph: Show Jump Sidebar**.
-
 - **Short** — purpose only  
 - **Standard** — purpose + fields + notes  
 - **Deep** — use case, concrete example, why-not-simpler alternatives, and why this design is better
@@ -63,8 +61,6 @@ Settings:
 - `Codegraph: Test API Connection`
 - `Codegraph: Repo Brief` — first-look map of the Python workspace
 - `Codegraph: Set Explain Depth` — short / standard / deep
-- `Codegraph: Find Definition`
-- `Codegraph: Find Usages`
 
 ### Model access
 

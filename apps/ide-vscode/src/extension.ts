@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { buildRepoBrief, buildSelectionContext, findDefinition, findUsages } from "@codegraph/core";
+import { buildRepoBrief, buildSelectionContext } from "@codegraph/core";
 import {
   applyEnrichmentText,
   buildPointerAgentHandoffPrompt,
@@ -25,7 +25,6 @@ import { normalizeWorkspacePath } from "@codegraph/workspace";
 
 import { captureEditorState, setLiveBridgeEnabled } from "./liveBridge";
 import { autoSendToCursorAgent } from "./agentHandoff";
-import { CodegraphSidebarProvider } from "./sidebarView";
 
 type SelectionContext = Awaited<ReturnType<typeof buildSelectionContext>>;
 type EnrichedSelectionContext = GatewayEnrichedSelectionContext;
@@ -42,8 +41,9 @@ interface CodeUnderstandingSession {
 }
 
 let outputChannel: vscode.OutputChannel | undefined;
-let sidebarProvider: CodegraphSidebarProvider | undefined;
+let panel: vscode.WebviewPanel | undefined;
 let currentSession: CodeUnderstandingSession | undefined;
+let panelMessageHooked = false;
 let liveExplainEnabled = false;
 let liveExplainStatusBar: vscode.StatusBarItem | undefined;
 let explainDepthStatusBar: vscode.StatusBarItem | undefined;
@@ -220,15 +220,12 @@ async function setLiveExplainEnabled(enabled: boolean, announce = true): Promise
       // Always hand off in agent mode — this was previously false and blocked all Live Agent sends.
       void runExplainSelection(extensionContext, request, { live: true, handOffAgent: true });
     }
-  } else if (sidebarProvider && currentSession) {
-    const webview = sidebarProvider.webview;
-    sidebarProvider.setHtml(
-      renderExplanationHtml(
-        currentSession.request.filePath,
-        currentSession.request.line,
-        currentSession.result,
-        { logoUri: webview ? extensionIconWebviewUri(webview) : undefined }
-      )
+  } else if (panel && currentSession) {
+    panel.webview.html = renderExplanationHtml(
+      currentSession.request.filePath,
+      currentSession.request.line,
+      currentSession.result,
+      { logoUri: extensionIconWebviewUri(panel.webview) }
     );
   }
 }
@@ -305,15 +302,6 @@ export function activate(context: vscode.ExtensionContext): void {
     : monorepoParser;
 
   logCodegraph(`Activated. parser=${process.env.CODEGRAPH_PYTHON_PARSER}`, true);
-
-  sidebarProvider = new CodegraphSidebarProvider(context.extensionUri, (message) => {
-    void handlePanelMessage(message);
-  });
-  context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(CodegraphSidebarProvider.viewType, sidebarProvider, {
-      webviewOptions: { retainContextWhenHidden: true }
-    })
-  );
 
   // Left + high priority so Cursor's crowded right status bar cannot hide these.
   liveExplainStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 1000);
@@ -435,42 +423,6 @@ export function activate(context: vscode.ExtensionContext): void {
     await runAskCursorAgent(context, request);
   });
 
-  const definitionCommand = vscode.commands.registerCommand("codegraph.findDefinition", async () => {
-    const request = getActiveRequest() ?? currentSession?.request;
-
-    if (!request) {
-      void vscode.window.showWarningMessage("Codegraph needs an active editor or an existing session.");
-      return;
-    }
-
-    const definitions = await findDefinition(request);
-
-    if (definitions.length === 0) {
-      void vscode.window.showInformationMessage("Codegraph did not find a matching definition.");
-      return;
-    }
-
-    await openFromCandidates(request.rootPath, definitions, "definition");
-  });
-
-  const usagesCommand = vscode.commands.registerCommand("codegraph.findUsages", async () => {
-    const request = getActiveRequest() ?? currentSession?.request;
-
-    if (!request) {
-      void vscode.window.showWarningMessage("Codegraph needs an active editor or an existing session.");
-      return;
-    }
-
-    const usages = await findUsages(request);
-
-    if (usages.length === 0) {
-      void vscode.window.showInformationMessage("Codegraph did not find any usages.");
-      return;
-    }
-
-    await openFromCandidates(request.rootPath, usages, "usage");
-  });
-
   const configureApiCommand = vscode.commands.registerCommand("codegraph.configureApiProvider", async () => {
     await configureApiProvider({ enableApiKeyMode: true });
   });
@@ -505,21 +457,6 @@ export function activate(context: vscode.ExtensionContext): void {
     lastLiveExplainKey = "";
     updateExplainDepthStatusBar();
     void vscode.window.showInformationMessage(`Explain depth: ${picked.label}`);
-  });
-
-  const showSidebarCommand = vscode.commands.registerCommand("codegraph.showSidebar", async () => {
-    await sidebarProvider?.reveal(false);
-    if (currentSession && sidebarProvider) {
-      const webview = sidebarProvider.webview;
-      sidebarProvider.setHtml(
-        renderExplanationHtml(
-          currentSession.request.filePath,
-          currentSession.request.line,
-          currentSession.result,
-          { logoUri: webview ? extensionIconWebviewUri(webview) : undefined }
-        )
-      );
-    }
   });
 
   const configListener = vscode.workspace.onDidChangeConfiguration(async (event) => {
@@ -565,13 +502,10 @@ export function activate(context: vscode.ExtensionContext): void {
     diagnoseCommand,
     explainCommand,
     askAgentCommand,
-    definitionCommand,
-    usagesCommand,
     configureApiCommand,
     testApiCommand,
     repoBriefCommand,
     setDepthCommand,
-    showSidebarCommand,
     configListener,
     selectionListener,
     editorListener,
@@ -598,8 +532,10 @@ export function deactivate(): void {
   }
   outputChannel?.dispose();
   outputChannel = undefined;
-  sidebarProvider = undefined;
+  panel?.dispose();
+  panel = undefined;
   currentSession = undefined;
+  panelMessageHooked = false;
   liveExplainStatusBar?.dispose();
   liveExplainStatusBar = undefined;
   explainDepthStatusBar?.dispose();
@@ -635,8 +571,7 @@ function getActiveRequest(options?: { quiet?: boolean }):
 
   const selection = editor.selection;
   const selected = editor.document.getText(selection).trim();
-  // Live Explain usually has an empty selection — use the identifier under the cursor
-  // so Jump searches that symbol, not the first token on the line (which looks "random").
+  // Live Explain usually has an empty selection — use the identifier under the cursor.
   const wordRange =
     selected.length === 0
       ? editor.document.getWordRangeAtPosition(selection.active, /[A-Za-z_][A-Za-z0-9_]*/)
@@ -946,7 +881,7 @@ async function runRepoBrief(options?: { force?: boolean }): Promise<void> {
       result: pending
     };
     renderExplainPanel(extensionContext, currentSession.request, pending, { live: false, announce: false });
-    void vscode.window.showInformationMessage("Repo brief ready in the Codegraph sidebar (activity bar).");
+    void vscode.window.showInformationMessage("Repo brief ready in the Codegraph panel.");
     return;
   }
 
@@ -1277,33 +1212,10 @@ async function runExplainSelection(
     captureEditorState(editor, request);
   }
 
-  // Agent mode: slim pointer → Agent chat; Jump list → activity-bar sidebar (not editor webview).
-  // Editor WebviewPanels get closed when Cursor Agent opens; the sidebar survives.
+  // Agent mode: slim pointer only — answer lives in Agent chat (no Jump panel).
   if (agentMode) {
     logCodegraph(`Agent mode explain for ${request.filePath}:${request.line} (live=${live})`, true);
-    const grounded = await gatherSourceWindowContext(request);
-    if (live && generation !== liveExplainGeneration) {
-      logCodegraph(
-        `Agent gather aborted (superseded by newer symbol) for ${request.filePath}:${request.line}`,
-        true
-      );
-      return;
-    }
-
-    // Update sidebar Jump list before handoff so links are ready even if Agent UI steals focus.
-    const pendingJump: EnrichedSelectionContext = {
-      ...grounded,
-      enrichment: {
-        used: false,
-        provider: "cursor-agent",
-        model: "subscription",
-        error: "Sending to Agent chat… Jump links stay in the Codegraph sidebar."
-      }
-    };
-    currentSession = { request, result: pendingJump };
-    renderExplainPanel(context, request, pendingJump, { live, announce: false });
-
-    const handoff = await enrichGroundedContext(request, pointerContext(request), {
+    const result = await enrichGroundedContext(request, pointerContext(request), {
       live,
       handOffAgent: options?.handOffAgent ?? true
     });
@@ -1314,39 +1226,9 @@ async function runExplainSelection(
       );
       return;
     }
-
-    const groundedRelated = grounded.explanation.relatedCode ?? [];
-    const handoffRelated = handoff.explanation.relatedCode ?? [];
-    const result: EnrichedSelectionContext = {
-      ...handoff,
-      context: {
-        ...handoff.context,
-        definitions: grounded.context.definitions,
-        references: grounded.context.references,
-        relatedFiles: grounded.context.relatedFiles,
-        documentation: grounded.context.documentation,
-        configuration: grounded.context.configuration
-      },
-      explanation: {
-        ...handoff.explanation,
-        sources: grounded.explanation.sources.length
-          ? grounded.explanation.sources
-          : handoff.explanation.sources,
-        relatedCode: groundedRelated.length ? groundedRelated : handoffRelated
-      },
-      metadata: grounded.metadata,
-      enrichment: {
-        ...handoff.enrichment,
-        error: handoff.enrichment.used
-          ? `${handoff.enrichment.error ?? "Sent to Agent."} Open Codegraph in the activity bar for Jump.`
-          : handoff.enrichment.error ??
-            "Agent handoff failed. Jump list is in the Codegraph sidebar."
-      }
-    };
     currentSession = { request, result };
-    renderExplainPanel(context, request, result, { live, announce: false });
     logCodegraph(
-      `Agent handoff ${result.enrichment.used ? "OK" : "FAILED"} — defs=${result.context.definitions.length} refs=${result.context.references.length} — ${result.enrichment.error ?? ""}`,
+      `Agent handoff ${result.enrichment.used ? "OK" : "FAILED"} — ${result.enrichment.error ?? ""}`,
       true
     );
     if (!result.enrichment.used) {
@@ -1381,7 +1263,7 @@ async function runExplainSelection(
 }
 
 function renderExplainPanel(
-  _context: vscode.ExtensionContext,
+  context: vscode.ExtensionContext,
   request: { rootPath: string; filePath: string; line: number; selectedText?: string },
   result: EnrichedSelectionContext,
   options: { live: boolean; announce: boolean }
@@ -1413,23 +1295,20 @@ function renderExplainPanel(
     )
   );
   channel.appendLine(`enrichment=${enrichmentStatusLabel(result.enrichment)}`);
-  channel.appendLine(
-    `jumpSidebar defs=${result.context.definitions.length} refs=${result.context.references.length}`
-  );
 
-  if (!sidebarProvider) {
-    logCodegraph("Codegraph sidebar provider missing — Jump UI unavailable.", true);
+  ensurePanel(context);
+  if (!panel) {
     return;
   }
 
-  const webview = sidebarProvider.webview;
-  sidebarProvider.setHtml(
-    renderExplanationHtml(request.filePath, request.line, result, {
-      logoUri: webview ? extensionIconWebviewUri(webview) : undefined
-    })
-  );
-  // Reveal activity-bar view (does not use editor groups — Agent cannot close it).
-  void sidebarProvider.reveal(true);
+  const label = request.selectedText
+    ? request.selectedText.slice(0, 48)
+    : `${request.filePath}:${request.line}`;
+  panel.title = options.live ? `Codegraph Live: ${label}` : `Codegraph: ${label}`;
+  panel.webview.html = renderExplanationHtml(request.filePath, request.line, result, {
+    logoUri: extensionIconWebviewUri(panel.webview)
+  });
+  panel.reveal(vscode.ViewColumn.Beside, true);
 
   if (options.announce) {
     const enrichmentLabel = enrichmentStatusLabel(result.enrichment);
@@ -1438,6 +1317,33 @@ function renderExplainPanel(
       : `Prepared local context for ${request.filePath}:${request.line} (tier ${result.metadata.capabilityTier}, enrichment ${enrichmentLabel}).`;
 
     void vscode.window.showInformationMessage(summaryText);
+  }
+}
+
+function ensurePanel(context: vscode.ExtensionContext): void {
+  if (!panel) {
+    panel = vscode.window.createWebviewPanel(
+      "codegraph.explanation",
+      "Codegraph",
+      vscode.ViewColumn.Beside,
+      {
+        enableFindWidget: true,
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, "media")]
+      }
+    );
+    panel.onDidDispose(() => {
+      panel = undefined;
+      panelMessageHooked = false;
+    }, undefined, context.subscriptions);
+  }
+
+  if (!panelMessageHooked) {
+    panel.webview.onDidReceiveMessage((message) => {
+      void handlePanelMessage(message);
+    }, undefined, context.subscriptions);
+    panelMessageHooked = true;
   }
 }
 
@@ -1457,16 +1363,6 @@ async function handlePanelMessage(message: unknown): Promise<void> {
 
   if (parsed.type === "openSource" && parsed.file && currentSession) {
     await openSourceLocation(currentSession.request.rootPath, parsed.file, parsed.line ?? 1);
-    return;
-  }
-
-  if (parsed.type === "findDefinition") {
-    await vscode.commands.executeCommand("codegraph.findDefinition");
-    return;
-  }
-
-  if (parsed.type === "findUsages") {
-    await vscode.commands.executeCommand("codegraph.findUsages");
     return;
   }
 
@@ -1490,15 +1386,12 @@ async function handlePanelMessage(message: unknown): Promise<void> {
     lastLiveExplainKey = "";
     updateExplainDepthStatusBar();
     void vscode.window.showInformationMessage(`Explain depth: ${depth}`);
-    if (sidebarProvider && currentSession) {
-      const webview = sidebarProvider.webview;
-      sidebarProvider.setHtml(
-        renderExplanationHtml(
-          currentSession.request.filePath,
-          currentSession.request.line,
-          currentSession.result,
-          { logoUri: webview ? extensionIconWebviewUri(webview) : undefined }
-        )
+    if (panel && currentSession) {
+      panel.webview.html = renderExplanationHtml(
+        currentSession.request.filePath,
+        currentSession.request.line,
+        currentSession.result,
+        { logoUri: extensionIconWebviewUri(panel.webview) }
       );
     }
     return;
@@ -1548,8 +1441,8 @@ async function handlePanelMessage(message: unknown): Promise<void> {
 
     void vscode.window.showInformationMessage(
       useApiKeyProvider
-        ? "API key mode: enriched answers show in the Codegraph sidebar."
-        : "Agent mode: write-up in Agent chat; Jump list in the Codegraph activity-bar sidebar."
+        ? "API key mode: enriched answers show in the Codegraph panel."
+        : "Agent mode: answers show in Cursor Agent chat."
     );
   }
 }
@@ -1694,52 +1587,6 @@ function renderExplanationHtml(
   const resolution = `${result.metadata.source} · tier ${result.metadata.capabilityTier}`;
   const logoUri = options?.logoUri;
   const depth = explainDepthSetting();
-  const jumpSymbol =
-    result.context.target.selectedText?.trim() ||
-    result.explanation.summary?.split("@")[0]?.trim() ||
-    "";
-  // Definitions: only real def/class sites (ignore cursor-line "mention" fallbacks).
-  const definitions = (result.context.definitions ?? [])
-    .filter((item) => item.kind === "definition")
-    .slice(0, 8);
-  // Usages: prefer import/call/attribute; mentions are last-resort in core already.
-  const usages = (result.context.references ?? [])
-    .filter((item) => item.kind !== "definition")
-    .slice(0, 10);
-
-  const jumpList = `
-      <h2>Jump${jumpSymbol ? ` · <code>${escapeHtml(jumpSymbol)}</code>` : ""}</h2>
-      <p class="muted">Text scan for this name (imports / calls / attributes). Not full LSP.</p>
-      <div class="jump">
-        <div>
-          <div class="jump-label">Definitions</div>
-          ${
-            definitions.length
-              ? `<ul class="jump-list">${definitions
-                  .map(
-                    (item) =>
-                      `<li><button class="source-link" data-file="${escapeAttribute(item.file)}" data-line="${item.line}">${escapeHtml(shortFileLabel(item.file))}:${item.line}</button></li>`
-                  )
-                  .join("")}</ul>`
-              : `<p class="muted">No def/class found for this name · <button data-action="findDefinition">Find definition</button></p>`
-          }
-        </div>
-        <div>
-          <div class="jump-label">Usages</div>
-          ${
-            usages.length
-              ? `<ul class="jump-list">${usages
-                  .map(
-                    (item) =>
-                      `<li><button class="source-link" data-file="${escapeAttribute(item.file)}" data-line="${item.line}"><span class="muted">${escapeHtml(item.kind ?? "ref")}</span> ${escapeHtml(shortFileLabel(item.file))}:${item.line}</button></li>`
-                  )
-                  .join("")}</ul>`
-              : `<p class="muted">No import/call/attr hits · <button data-action="findUsages">Find usages</button></p>`
-          }
-        </div>
-      </div>
-    `;
-
   const body = enriched
     ? `
       <h2>Purpose</h2>
@@ -1753,18 +1600,15 @@ function renderExplanationHtml(
 
       ${usageBody.trim() ? `<h2>In this codebase</h2>${renderMarkdownLite(usageBody)}` : ""}
 
-      ${jumpList}
-
       <p class="continue">${escapeHtml(continueText ?? "Ask about that, or keep moving.")}</p>
     `
     : `
       <p class="pending">${
         result.enrichment?.provider === "cursor-agent" || result.enrichment?.provider === "agent"
-          ? "Full write-up is in <strong>Agent chat</strong>. This <strong>sidebar</strong> holds the Jump list."
+          ? "Full write-up is in <strong>Agent chat</strong>."
           : "Source window ready — waiting for API enrichment."
       }</p>
       <p class="muted">${escapeHtml(result.enrichment?.error || "")}</p>
-      ${jumpList}
       <details>
         <summary class="muted">Raw grounded context</summary>
         <pre>${escapeHtml(result.explanation.howItWorks || "")}</pre>
@@ -1924,23 +1768,7 @@ function renderExplanationHtml(
           border-color: var(--cg-teal);
           color: var(--cg-teal);
         }
-        .jump {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 12px;
-        }
-        .jump-label {
-          font-size: 0.8rem;
-          color: var(--vscode-descriptionForeground);
-          margin-bottom: 4px;
-        }
-        .jump-list {
-          margin: 0;
-          padding-left: 1.1rem;
-          font-size: 0.88rem;
-        }
         @media (max-width: 520px) {
-          .jump { grid-template-columns: 1fr; }
         }
       </style>
     </head>
@@ -1958,8 +1786,6 @@ function renderExplanationHtml(
         <button class="chip ${depth === "short" ? "active" : ""}" data-action="setExplainDepth" data-depth="short">Short</button>
         <button class="chip ${depth === "standard" ? "active" : ""}" data-action="setExplainDepth" data-depth="standard">Standard</button>
         <button class="chip ${depth === "deep" ? "active" : ""}" data-action="setExplainDepth" data-depth="deep">Deep</button>
-        <button class="chip" data-action="findDefinition">Find definition</button>
-        <button class="chip" data-action="findUsages">Find usages</button>
         <button class="chip" data-action="repoBrief">Repo brief</button>
       </div>
       <h1>${escapeHtml(title)}</h1>
@@ -2029,32 +1855,4 @@ async function openSourceLocation(rootPath: string, relativeFilePath: string, li
   const position = new vscode.Position(targetLine, 0);
   editor.selection = new vscode.Selection(position, position);
   editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
-}
-
-async function openFromCandidates(rootPath: string, items: SourceLike[], noun: string): Promise<void> {
-  if (items.length === 1) {
-    const item = items[0];
-
-    if (item) {
-      await openSourceLocation(rootPath, item.file, item.line);
-    }
-
-    return;
-  }
-
-  const picked = await vscode.window.showQuickPick(
-    items.map((item) => ({
-      label: `${item.file}:${item.line}`,
-      description: noun,
-      detail: item.excerpt,
-      item
-    })),
-    {
-      placeHolder: `Select a ${noun} to open`
-    }
-  );
-
-  if (picked) {
-    await openSourceLocation(rootPath, picked.item.file, picked.item.line);
-  }
 }
