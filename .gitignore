@@ -7,6 +7,7 @@ out
 !.cursor/skills/
 !.cursor/skills/codegraph/
 !.cursor/skills/codegraph/SKILL.md
+*.tsbuildinfo
 *.vsix
 # Byte-compiled / optimized / DLL files
 __pycache__/
