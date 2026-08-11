@@ -6,6 +6,8 @@ import type {
   ContextBundle,
   Explanation,
   InferredClaim,
+  LogicalSectionDepth,
+  ReferenceKind,
   ResolutionMetadata,
   SourceReference,
   TargetContext,
@@ -19,6 +21,7 @@ export interface ExplainSelectionRequest {
   filePath: string;
   line: number;
   selectedText?: string;
+  depth?: LogicalSectionDepth;
 }
 
 type PythonSymbolKind = "function" | "class";
@@ -48,10 +51,12 @@ export interface SelectionContextResult {
 export interface LogicalSectionResult {
   file: string;
   symbolName?: string;
-  kind: PythonSymbolKind | "text";
+  kind: PythonSymbolKind | "statement" | "text";
+  depth: LogicalSectionDepth;
   startLine: number;
   endLine: number;
   excerpt: string;
+  confidence: number;
 }
 
 interface SelectionAnalysis {
@@ -85,15 +90,21 @@ function languageFromFile(filePath: string): string | undefined {
   return undefined;
 }
 
-function buildExcerpt(lines: string[], lineNumber: number): string {
-  const startLine = Math.max(0, lineNumber - 3);
-  const endLine = Math.min(lines.length, lineNumber + 2);
+function buildExcerpt(lines: string[], lineNumber: number, radius = 2): string {
+  const startLine = Math.max(0, lineNumber - 1 - radius);
+  const endLine = Math.min(lines.length, lineNumber + radius);
 
   return lines.slice(startLine, endLine).join("\n");
 }
 
-function createSourceReference(file: string, line: number, excerpt: string): SourceReference {
-  return { file, line, excerpt };
+function createSourceReference(
+  file: string,
+  line: number,
+  excerpt: string,
+  kind?: ReferenceKind,
+  score?: number
+): SourceReference {
+  return { file, line, excerpt, kind, score };
 }
 
 function escapeForRegex(value: string): string {
@@ -199,12 +210,49 @@ function findSymbolDefinitions(symbols: PythonSymbol[], symbolName: string): Pyt
   return symbols.filter((symbol) => symbol.name === symbolName);
 }
 
+function classifyReferenceKind(line: string, symbolName: string): ReferenceKind {
+  const escaped = escapeForRegex(symbolName);
+
+  if (new RegExp(`^\\s*(?:async\\s+)?(?:def|class)\\s+${escaped}\\b`).test(line)) {
+    return "definition";
+  }
+
+  if (new RegExp(`\\b(?:from\\s+\\S+\\s+import\\s+.*\\b${escaped}\\b|import\\s+.*\\b${escaped}\\b)`).test(line)) {
+    return "import";
+  }
+
+  if (new RegExp(`\\b${escaped}\\s*\\(`).test(line)) {
+    return "call";
+  }
+
+  if (new RegExp(`\\.${escaped}\\b`).test(line) || new RegExp(`\\b${escaped}\\.`).test(line)) {
+    return "attribute";
+  }
+
+  return "mention";
+}
+
+function scoreReference(kind: ReferenceKind, sameFile: boolean): number {
+  const kindScore: Record<ReferenceKind, number> = {
+    call: 100,
+    attribute: 80,
+    import: 60,
+    mention: 40,
+    definition: 10
+  };
+
+  return kindScore[kind] + (sameFile ? 5 : 0);
+}
+
 function findSymbolReferences(
   files: Array<{ file: string; content: string }>,
   symbolName: string,
+  definitions: SourceReference[],
+  originFile: string,
   limit = 8
 ): SourceReference[] {
   const pattern = new RegExp(`\\b${escapeForRegex(symbolName)}\\b`);
+  const definitionKeys = new Set(definitions.map((definition) => `${definition.file}:${definition.line}`));
   const references: SourceReference[] = [];
 
   for (const { file, content } of files) {
@@ -212,24 +260,34 @@ function findSymbolReferences(
 
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index] ?? "";
+      const lineNumber = index + 1;
+      const key = `${file}:${lineNumber}`;
 
-      if (!pattern.test(line)) {
+      if (!pattern.test(line) || definitionKeys.has(key)) {
         continue;
       }
 
-      references.push({
-        file,
-        line: index + 1,
-        excerpt: redactSecrets(buildExcerpt(lines, index + 1))
-      });
+      const kind = classifyReferenceKind(line, symbolName);
 
-      if (references.length >= limit) {
-        return references;
+      if (kind === "definition") {
+        continue;
       }
+
+      references.push(
+        createSourceReference(
+          file,
+          lineNumber,
+          redactSecrets(buildExcerpt(lines, lineNumber)),
+          kind,
+          scoreReference(kind, file === originFile)
+        )
+      );
     }
   }
 
-  return references;
+  return dedupeReferences(references)
+    .sort((left, right) => (right.score ?? 0) - (left.score ?? 0))
+    .slice(0, limit);
 }
 
 function dedupeReferences(references: SourceReference[]): SourceReference[] {
@@ -247,6 +305,55 @@ function dedupeReferences(references: SourceReference[]): SourceReference[] {
   });
 }
 
+function detectStatementBlock(lines: string[], lineNumber: number): { startLine: number; endLine: number; excerpt: string } {
+  const current = getLine(lines, lineNumber);
+  const indentMatch = current.match(/^(\s*)/);
+  const indent = indentMatch?.[1]?.length ?? 0;
+  let startLine = lineNumber;
+  let endLine = lineNumber;
+
+  for (let index = lineNumber - 1; index >= 1; index -= 1) {
+    const line = getLine(lines, index);
+
+    if (!line.trim()) {
+      continue;
+    }
+
+    const lineIndent = (line.match(/^(\s*)/)?.[1] ?? "").length;
+
+    if (lineIndent < indent) {
+      break;
+    }
+
+    if (lineIndent === indent) {
+      startLine = index;
+    }
+  }
+
+  for (let index = lineNumber + 1; index <= lines.length; index += 1) {
+    const line = getLine(lines, index);
+
+    if (!line.trim()) {
+      endLine = index;
+      continue;
+    }
+
+    const lineIndent = (line.match(/^(\s*)/)?.[1] ?? "").length;
+
+    if (lineIndent < indent) {
+      break;
+    }
+
+    endLine = index;
+  }
+
+  return {
+    startLine,
+    endLine,
+    excerpt: redactSecrets(lines.slice(startLine - 1, endLine).join("\n"))
+  };
+}
+
 function buildInferredClaims(
   symbolName: string,
   definitions: SourceReference[],
@@ -256,9 +363,14 @@ function buildInferredClaims(
     return [];
   }
 
+  const callCount = references.filter((reference) => reference.kind === "call").length;
+
   return [
     {
-      claim: `${symbolName} appears to be actively used in the current repository.`,
+      claim:
+        callCount > 0
+          ? `${symbolName} appears to be actively called in the current repository.`
+          : `${symbolName} appears to be referenced in the current repository.`,
       confidence: references.length > 2 ? "high" : "medium",
       evidence: [...definitions.slice(0, 1), ...references.slice(0, 2)]
     }
@@ -280,6 +392,7 @@ function buildExplanation(
     ? `${definitions[0].file}:${definitions[0].line}`
     : `${file}:${line}`;
   const referenceCount = references.length;
+  const callCount = references.filter((reference) => reference.kind === "call").length;
 
   return {
     summary: symbolName
@@ -292,12 +405,12 @@ function buildExplanation(
       ? `Codegraph captured the local definition excerpt and bounded surrounding lines for analysis.\n\n${definitions[0].excerpt}`
       : "Codegraph used local file context because no better definition was found yet.",
     whyItExists: referenceCount > 0
-      ? `The symbol is referenced ${referenceCount} time(s) in the scanned Python workspace files, which suggests it participates in the current repository flow.`
-      : "No additional references were found in the scanned Python files, so this first explanation is based mostly on local context.",
+      ? `The symbol has ${referenceCount} ranked non-definition reference(s)${callCount > 0 ? `, including ${callCount} call site(s)` : ""}, which suggests it participates in the current repository flow.`
+      : "No additional non-definition references were found in the scanned Python files, so this explanation is based mostly on local context.",
     codebaseUsage: referenceCount > 0
       ? references
           .slice(0, 3)
-          .map((reference) => `- ${reference.file}:${reference.line}`)
+          .map((reference) => `- [${reference.kind ?? "mention"}] ${reference.file}:${reference.line}`)
           .join("\n")
       : "No repository-wide references were found in the current bounded scan.",
     caveats: [
@@ -325,14 +438,18 @@ async function analyzeSelection(request: ExplainSelectionRequest): Promise<Selec
   const containingScopes = languageFromFile(file) === "python" ? findContainingPythonScopes(localSymbols, request.line, file) : [];
   const definitions = selectedSymbol
     ? findSymbolDefinitions(workspaceSymbols, selectedSymbol).map((symbol) =>
-        createSourceReference(symbol.file, symbol.line, symbol.excerpt)
+        createSourceReference(symbol.file, symbol.line, symbol.excerpt, "definition", 100)
       )
-    : [createSourceReference(file, request.line, redactSecrets(buildExcerpt(lines, request.line)))];
-  const references = selectedSymbol ? findSymbolReferences(workspacePythonFiles, selectedSymbol) : [];
+    : [createSourceReference(file, request.line, redactSecrets(buildExcerpt(lines, request.line)), "mention", 20)];
+  const references = selectedSymbol
+    ? findSymbolReferences(workspacePythonFiles, selectedSymbol, definitions, file)
+    : [];
   const relatedFiles = dedupeReferences(references).map((reference) => ({
     file: reference.file,
     line: reference.line,
-    excerpt: reference.excerpt
+    excerpt: reference.excerpt,
+    kind: reference.kind,
+    score: reference.score
   }));
   const metadata: ResolutionMetadata = {
     source: languageFromFile(file) === "python" && workspaceAnalysis.usedAst ? "ast" : "text",
@@ -374,25 +491,75 @@ export async function findUsages(request: ExplainSelectionRequest): Promise<Sour
 
 export async function getLogicalSection(request: ExplainSelectionRequest): Promise<LogicalSectionResult> {
   const analysis = await analyzeSelection(request);
-  const narrowestScope = analysis.containingScopes[analysis.containingScopes.length - 1];
+  const depth: LogicalSectionDepth = request.depth ?? "auto";
+  const scopes = analysis.containingScopes;
+  const functionScope = [...scopes].reverse().find((scope) => scope.kind === "function");
+  const classScope = [...scopes].reverse().find((scope) => scope.kind === "class");
+  const narrowestScope = scopes[scopes.length - 1];
+
+  if (depth === "statement" || (depth === "auto" && !narrowestScope)) {
+    const statement = detectStatementBlock(analysis.lines, request.line);
+
+    return {
+      file: analysis.file,
+      kind: "statement",
+      depth,
+      startLine: statement.startLine,
+      endLine: statement.endLine,
+      excerpt: statement.excerpt,
+      confidence: 0.55
+    };
+  }
+
+  if (depth === "function" && functionScope) {
+    return {
+      file: analysis.file,
+      symbolName: functionScope.name,
+      kind: functionScope.kind,
+      depth,
+      startLine: functionScope.line,
+      endLine: functionScope.endLine,
+      excerpt: functionScope.excerpt,
+      confidence: 0.9
+    };
+  }
+
+  if (depth === "class" && classScope) {
+    return {
+      file: analysis.file,
+      symbolName: classScope.name,
+      kind: classScope.kind,
+      depth,
+      startLine: classScope.line,
+      endLine: classScope.endLine,
+      excerpt: classScope.excerpt,
+      confidence: 0.88
+    };
+  }
 
   if (narrowestScope) {
     return {
       file: analysis.file,
       symbolName: narrowestScope.name,
       kind: narrowestScope.kind,
+      depth,
       startLine: narrowestScope.line,
       endLine: narrowestScope.endLine,
-      excerpt: narrowestScope.excerpt
+      excerpt: narrowestScope.excerpt,
+      confidence: 0.86
     };
   }
+
+  const statement = detectStatementBlock(analysis.lines, request.line);
 
   return {
     file: analysis.file,
     kind: "text",
-    startLine: Math.max(1, request.line - 2),
-    endLine: Math.min(analysis.lines.length, request.line + 2),
-    excerpt: redactSecrets(buildExcerpt(analysis.lines, request.line))
+    depth,
+    startLine: statement.startLine,
+    endLine: statement.endLine,
+    excerpt: statement.excerpt,
+    confidence: 0.4
   };
 }
 

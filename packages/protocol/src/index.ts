@@ -35,12 +35,18 @@ export interface TargetContext {
   selectedText?: string;
 }
 
+export type ReferenceKind = "definition" | "call" | "attribute" | "import" | "mention";
+
 export interface SourceReference {
   file: WorkspaceRelativePath;
   line: number;
   column?: number;
   excerpt?: string;
+  kind?: ReferenceKind;
+  score?: number;
 }
+
+export type LogicalSectionDepth = "statement" | "function" | "class" | "auto";
 
 export interface FlowStep {
   title: string;
