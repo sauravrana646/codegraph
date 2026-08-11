@@ -250,12 +250,14 @@ function scheduleLiveExplain(): void {
     clearTimeout(liveExplainTimer);
   }
 
-  const generation = ++liveExplainGeneration;
+  // Do NOT bump liveExplainGeneration here. Cursor jitter on the same symbol used to
+  // increment generation on every schedule and cancel the in-flight gather/handoff
+  // before the panel/Agent send finished. Only bump when starting a *new* symbol.
   liveExplainTimer = setTimeout(() => {
     const request = getActiveRequest({ quiet: true });
     const activeEditor = vscode.window.activeTextEditor;
-    if (!request || generation !== liveExplainGeneration || !extensionContext || !activeEditor) {
-      logCodegraph("Live tick skipped (no request/editor or superseded).");
+    if (!request || !extensionContext || !activeEditor) {
+      logCodegraph("Live tick skipped (no request/editor).");
       return;
     }
 
@@ -274,6 +276,9 @@ function scheduleLiveExplain(): void {
       logCodegraph(`Live tick skipped (same symbol) ${key}`);
       return;
     }
+
+    // New symbol (or empty key): supersede any in-flight explain for the previous symbol.
+    liveExplainGeneration += 1;
     lastLiveExplainKey = key;
 
     logCodegraph(`Live tick → ${request.filePath}:${request.line} key=${key}`);
@@ -1244,6 +1249,10 @@ async function runExplainSelection(
     logCodegraph(`Agent mode explain for ${request.filePath}:${request.line} (live=${live})`, true);
     const grounded = await gatherSourceWindowContext(request);
     if (live && generation !== liveExplainGeneration) {
+      logCodegraph(
+        `Agent gather aborted (superseded by newer symbol) for ${request.filePath}:${request.line}`,
+        true
+      );
       return;
     }
 
@@ -1265,6 +1274,10 @@ async function runExplainSelection(
       handOffAgent: options?.handOffAgent ?? true
     });
     if (live && generation !== liveExplainGeneration) {
+      logCodegraph(
+        `Agent handoff aborted (superseded by newer symbol) for ${request.filePath}:${request.line}`,
+        true
+      );
       return;
     }
 
