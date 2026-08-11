@@ -7,7 +7,9 @@
     { "path": "./packages/language-intelligence" },
     { "path": "./packages/core" },
     { "path": "./packages/model-gateway" },
+    { "path": "./packages/agent-tools" },
     { "path": "./apps/runtime" },
+    { "path": "./apps/mcp" },
     { "path": "./apps/ide-vscode" }
   ]
 }

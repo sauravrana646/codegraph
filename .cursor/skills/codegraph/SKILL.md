@@ -13,6 +13,8 @@ The repository currently contains a usable local MVP:
 - npm workspace monorepo
 - VS Code/Cursor extension app in `apps/ide-vscode`
 - local runtime CLI + JSON API in `apps/runtime`
+- MCP stdio adapter in `apps/mcp`
+- shared tool runners in `packages/agent-tools`
 - shared protocol package in `packages/protocol`
 - AST-backed Python language intelligence in `packages/language-intelligence`
 - workspace path and identity helpers in `packages/workspace`
@@ -34,11 +36,11 @@ The repository currently contains a usable local MVP:
 
 ## Suggested next implementation order
 
-1. Improve logical section resolution beyond current symbol scope handling
-2. Improve bounded reference and related-code retrieval
-3. Expand provider adapters beyond OpenAI-compatible endpoints
-4. Expand the VS Code/Cursor extension with richer follow-up UX
-5. Ship MCP adapter around formal tool envelopes
+1. Deepen Code Understanding Session UX in the extension
+2. Expand provider adapters beyond OpenAI-compatible endpoints
+3. Add evaluation harness coverage for reference ranking and section depth
+4. Harden MCP session/follow-up tooling
+5. Broaden beyond Python with explicit experimental language tiers
 
 ## Useful commands
 
@@ -63,6 +65,20 @@ Run the local runtime API:
 npm run serve --workspace @codegraph/runtime -- 4311
 curl http://127.0.0.1:4311/health
 ```
+
+Run the MCP adapter:
+
+```bash
+npm run build --workspace @codegraph/mcp
+node apps/mcp/dist/index.js
+```
+
+MCP tools:
+
+- `explain_selection`
+- `find_definition`
+- `find_usages`
+- `logical_section`
 
 Available API endpoints:
 

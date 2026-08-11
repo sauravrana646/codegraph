@@ -6,8 +6,9 @@
     "outDir": "dist"
   },
   "references": [
-    { "path": "../../packages/agent-tools" },
-    { "path": "../../packages/protocol" }
+    { "path": "../core" },
+    { "path": "../model-gateway" },
+    { "path": "../protocol" }
   ],
   "include": ["src/**/*"]
 }

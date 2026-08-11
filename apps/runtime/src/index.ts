@@ -2,30 +2,17 @@
 import { randomUUID } from "node:crypto";
 import http from "node:http";
 
-import { buildSelectionContext, findDefinition, findUsages, getLogicalSection } from "@codegraph/core";
-import { enrichSelectionContext } from "@codegraph/model-gateway";
 import {
-  toolError,
-  toolSuccess,
-  type LogicalSectionDepth,
-  type ResolutionMetadata,
-  type ToolEnvelope,
-  type ToolName
-} from "@codegraph/protocol";
+  runExplainSelectionTool,
+  runFindDefinitionTool,
+  runFindUsagesTool,
+  runLogicalSectionTool,
+  runNamedTool,
+  type ToolRequest
+} from "@codegraph/agent-tools";
+import { toolError, type LogicalSectionDepth, type ToolEnvelope, type ToolName } from "@codegraph/protocol";
 
-interface RuntimeRequestBody {
-  rootPath: string;
-  filePath: string;
-  line: number;
-  selectedText?: string;
-  depth?: LogicalSectionDepth;
-  enrich?: boolean;
-  provider?: {
-    apiKey?: string;
-    baseUrl?: string;
-    model?: string;
-  };
-}
+interface RuntimeRequestBody extends ToolRequest {}
 
 type SessionAction = "explain-selection" | "find-definition" | "find-usages" | "logical-section";
 
@@ -145,72 +132,6 @@ function mergeRequest(
   };
 }
 
-function logicalSectionMetadata(confidence: number): ResolutionMetadata {
-  return {
-    source: "ast",
-    capabilityTier: confidence >= 0.7 ? 2 : 1,
-    confidence
-  };
-}
-
-async function explainEnvelope(request: RuntimeRequestBody) {
-  const deterministic = await buildSelectionContext({
-    rootPath: request.rootPath,
-    filePath: request.filePath,
-    line: request.line,
-    selectedText: request.selectedText
-  });
-
-  const enriched = await enrichSelectionContext(deterministic, {
-    enabled: request.enrich,
-    provider: request.provider
-  });
-
-  return toolSuccess(
-    "explain-selection",
-    {
-      workspace: enriched.workspace,
-      context: enriched.context,
-      explanation: enriched.explanation
-    },
-    {
-      metadata: enriched.metadata,
-      enrichment: enriched.enrichment
-    }
-  );
-}
-
-async function definitionEnvelope(request: RuntimeRequestBody) {
-  const items = await findDefinition(request);
-  return toolSuccess("find-definition", { items });
-}
-
-async function usagesEnvelope(request: RuntimeRequestBody) {
-  const items = await findUsages(request);
-  return toolSuccess("find-usages", { items });
-}
-
-async function logicalSectionEnvelope(request: RuntimeRequestBody) {
-  const section = await getLogicalSection(request);
-  return toolSuccess("logical-section", { section }, { metadata: logicalSectionMetadata(section.confidence) });
-}
-
-async function runAction(action: SessionAction, request: RuntimeRequestBody): Promise<ToolEnvelope<unknown>> {
-  if (action === "explain-selection") {
-    return explainEnvelope(request);
-  }
-
-  if (action === "find-definition") {
-    return definitionEnvelope(request);
-  }
-
-  if (action === "find-usages") {
-    return usagesEnvelope(request);
-  }
-
-  return logicalSectionEnvelope(request);
-}
-
 function withSession(
   tool: ToolName,
   session: RuntimeSession,
@@ -242,15 +163,15 @@ async function handleToolRequest(
     pruneExpiredSessions();
 
     if (request.method === "GET" && request.url === "/health") {
-      writeJson(
-        response,
-        200,
-        toolSuccess("health", {
+      writeJson(response, 200, {
+        ok: true,
+        tool: "health",
+        data: {
           service: "codegraph-runtime",
           activeSessions: sessions.size,
           enrichmentConfigured: Boolean(process.env.CODEGRAPH_API_KEY || process.env.OPENAI_API_KEY)
-        })
-      );
+        }
+      });
       return;
     }
 
@@ -276,7 +197,7 @@ async function handleToolRequest(
       }
 
       const session = createSession(payload);
-      const result = await explainEnvelope(payload);
+      const result = await runExplainSelectionTool(payload);
       writeJson(response, 200, withSession("sessions.explain-selection", session, result));
       return;
     }
@@ -309,7 +230,7 @@ async function handleToolRequest(
       session.request = mergeRequest(session.request, payload.requestOverrides);
       session.updatedAt = Date.now();
 
-      const result = await runAction(payload.action, session.request);
+      const result = await runNamedTool(payload.action, session.request);
       writeJson(response, 200, withSession("sessions.followup", session, result, payload.action));
       return;
     }
@@ -327,22 +248,22 @@ async function handleToolRequest(
     }
 
     if (request.url === "/v1/tools/explain-selection") {
-      writeJson(response, 200, await explainEnvelope(payload));
+      writeJson(response, 200, await runExplainSelectionTool(payload));
       return;
     }
 
     if (request.url === "/v1/tools/find-definition") {
-      writeJson(response, 200, await definitionEnvelope(payload));
+      writeJson(response, 200, await runFindDefinitionTool(payload));
       return;
     }
 
     if (request.url === "/v1/tools/find-usages") {
-      writeJson(response, 200, await usagesEnvelope(payload));
+      writeJson(response, 200, await runFindUsagesTool(payload));
       return;
     }
 
     if (request.url === "/v1/tools/logical-section") {
-      writeJson(response, 200, await logicalSectionEnvelope(payload));
+      writeJson(response, 200, await runLogicalSectionTool(payload));
       return;
     }
 
@@ -373,7 +294,7 @@ async function runExplainCommand(args: string[]): Promise<void> {
     return;
   }
 
-  const result = await explainEnvelope({
+  const result = await runExplainSelectionTool({
     rootPath,
     filePath,
     line,

@@ -1,21 +1,21 @@
 {
-  "name": "@codegraph/runtime",
+  "name": "@codegraph/mcp",
   "version": "0.1.0",
   "private": true,
+  "description": "MCP adapter exposing Codegraph deterministic tools over stdio.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "codegraph-runtime": "dist/index.js"
+    "codegraph-mcp": "dist/index.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "clean": "rm -rf dist",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "start": "node dist/index.js",
-    "serve": "node dist/index.js serve"
+    "start": "node dist/index.js"
   },
   "dependencies": {
     "@codegraph/agent-tools": "0.1.0",
-    "@codegraph/protocol": "0.1.0"
+    "@modelcontextprotocol/sdk": "^1.30.0"
   }
 }

@@ -7,8 +7,10 @@ Codegraph is a Python-first codebase intelligence platform that helps developers
 This repository now contains the first usable local MVP slice:
 
 - `apps/ide-vscode` — a VS Code/Cursor extension with an `Explain Selection` command and side-panel explanation view
-- `apps/runtime` — a local runtime CLI that builds bounded explanation context for a workspace/file/line
-- `packages/protocol` — shared type contracts
+- `apps/runtime` — a local runtime CLI + JSON API that builds bounded explanation context for a workspace/file/line
+- `apps/mcp` — a stdio MCP server exposing the same deterministic tools to Cursor/MCP clients
+- `packages/protocol` — shared type contracts and tool response envelopes
+- `packages/agent-tools` — shared tool runners used by runtime and MCP
 - `packages/workspace` — workspace identity and safe path helpers
 - `packages/security` — secret scanning/redaction and symlink containment checks
 - `packages/language-intelligence` — AST-backed Python symbol parsing through a safe `python3` bridge with fallback behavior
@@ -214,6 +216,46 @@ Supported follow-up actions:
 
 Sessions are in-memory and short-lived. They are intended for local agent or tool workflows, not durable storage.
 
+## Run the MCP adapter
+
+Codegraph exposes the same deterministic tools over MCP stdio for Cursor and other MCP clients.
+
+Build and inspect the server entrypoint:
+
+```bash
+npm run build --workspace @codegraph/mcp
+node apps/mcp/dist/index.js
+```
+
+Tools:
+
+- `explain_selection`
+- `find_definition`
+- `find_usages`
+- `logical_section`
+
+Each tool returns the shared JSON envelope (`ok`, `tool`, `data`, optional `metadata` / `enrichment`).
+
+### Cursor MCP config example
+
+Add to your Cursor MCP settings:
+
+```json
+{
+  "mcpServers": {
+    "codegraph": {
+      "command": "node",
+      "args": ["/absolute/path/to/codegraph/apps/mcp/dist/index.js"],
+      "env": {
+        "CODEGRAPH_API_KEY": ""
+      }
+    }
+  }
+}
+```
+
+After connecting, call `explain_selection` with `{ "rootPath", "filePath", "line", "selectedText?" }`.
+
 ## Run in Cursor IDE
 
 Cursor can run the VS Code-compatible extension in `apps/ide-vscode`.
@@ -316,11 +358,11 @@ This first usable version is intentionally narrow:
 
 The best next engineering tasks are:
 
-1. improve logical section detection and scope resolution
-2. strengthen deterministic reference quality and ranking
-3. expand provider adapters beyond OpenAI-compatible endpoints
-4. deepen follow-up Code Understanding Sessions in the extension UI
-5. expose richer tool schemas for MCP wrapping
+1. deepen follow-up Code Understanding Sessions in the extension UI
+2. expand provider adapters beyond OpenAI-compatible endpoints
+3. add evaluation harness coverage for reference ranking and section depth
+4. harden MCP session/follow-up tooling
+5. broaden beyond Python with explicit experimental language tiers
 
 For the full sequence, see:
 

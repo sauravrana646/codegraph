@@ -1,0 +1,17 @@
+{
+  "name": "@codegraph/agent-tools",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@codegraph/core": "0.1.0",
+    "@codegraph/model-gateway": "0.1.0",
+    "@codegraph/protocol": "0.1.0"
+  }
+}
