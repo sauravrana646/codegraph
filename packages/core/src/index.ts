@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
+import { parsePythonFile } from "@codegraph/language-intelligence";
 import type {
   ContextBundle,
   Explanation,
@@ -30,6 +31,11 @@ interface PythonSymbol {
   endLine: number;
   indent: number;
   excerpt: string;
+}
+
+interface WorkspacePythonAnalysis {
+  symbols: PythonSymbol[];
+  usedAst: boolean;
 }
 
 export interface SelectionContextResult {
@@ -90,59 +96,18 @@ function detectSelectedSymbol(lines: string[], lineNumber: number, selectedText?
   return extractSymbolFromLine(getLine(lines, lineNumber));
 }
 
-function collectPythonSymbols(file: string, content: string): PythonSymbol[] {
+function hydratePythonSymbols(
+  file: string,
+  content: string,
+  symbols: Array<{ name: string; kind: PythonSymbolKind; line: number; endLine: number; indent: number }>
+): PythonSymbol[] {
   const lines = content.split(/\r?\n/);
-  const symbols: PythonSymbol[] = [];
 
-  lines.forEach((line, index) => {
-    const match = line.match(/^(\s*)(def|class)\s+([A-Za-z_][A-Za-z0-9_]*)/);
-
-    if (!match) {
-      return;
-    }
-
-    const indentText = match[1] ?? "";
-    const keyword = match[2] ?? "def";
-    const name = match[3];
-
-    if (!name) {
-      return;
-    }
-    const lineNumber = index + 1;
-
-    symbols.push({
-      name,
-      kind: keyword === "class" ? "class" : "function",
-      file,
-      line: lineNumber,
-      endLine: lines.length,
-      indent: indentText.length,
-      excerpt: redactSecrets(buildExcerpt(lines, lineNumber))
-    });
-  });
-
-  for (let index = 0; index < symbols.length; index += 1) {
-    const current = symbols[index];
-
-    if (!current) {
-      continue;
-    }
-
-    for (let nextIndex = index + 1; nextIndex < symbols.length; nextIndex += 1) {
-      const nextSymbol = symbols[nextIndex];
-
-      if (!nextSymbol) {
-        continue;
-      }
-
-      if (nextSymbol.indent <= current.indent) {
-        current.endLine = nextSymbol.line - 1;
-        break;
-      }
-    }
-  }
-
-  return symbols;
+  return symbols.map((symbol) => ({
+    ...symbol,
+    file,
+    excerpt: redactSecrets(buildExcerpt(lines, symbol.line))
+  }));
 }
 
 function findContainingPythonScopes(symbols: PythonSymbol[], lineNumber: number, file: string): PythonSymbol[] {
@@ -173,22 +138,41 @@ async function walkWorkspaceFiles(rootPath: string, currentDir = rootPath): Prom
   return files;
 }
 
-async function readWorkspacePythonFiles(rootPath: string): Promise<Array<{ file: string; content: string }>> {
+async function readWorkspacePythonFiles(rootPath: string): Promise<Array<{ file: string; absolutePath: string; content: string }>> {
   const files = await walkWorkspaceFiles(rootPath);
   const pythonFiles = files.filter((file) => file.endsWith(".py")).slice(0, 200);
 
   return Promise.all(
     pythonFiles.map(async (file) => ({
       file,
+      absolutePath: path.join(rootPath, file),
       content: await fs.readFile(path.join(rootPath, file), "utf8")
     }))
   );
 }
 
-function findSymbolDefinitions(files: Array<{ file: string; content: string }>, symbolName: string): PythonSymbol[] {
-  return files.flatMap(({ file, content }) =>
-    collectPythonSymbols(file, content).filter((symbol) => symbol.name === symbolName)
+async function collectWorkspacePythonSymbols(
+  files: Array<{ file: string; absolutePath: string; content: string }>
+): Promise<WorkspacePythonAnalysis> {
+  const allSymbols = await Promise.all(
+    files.map(async ({ file, absolutePath, content }) => {
+      const parseResult = await parsePythonFile(absolutePath, content);
+
+      return {
+        symbols: hydratePythonSymbols(file, content, parseResult.symbols),
+        usedAst: parseResult.source === "python_ast"
+      };
+    })
   );
+
+  return {
+    symbols: allSymbols.flatMap((result) => result.symbols),
+    usedAst: allSymbols.some((result) => result.usedAst)
+  };
+}
+
+function findSymbolDefinitions(symbols: PythonSymbol[], symbolName: string): PythonSymbol[] {
+  return symbols.filter((symbol) => symbol.name === symbolName);
 }
 
 function findSymbolReferences(
@@ -293,7 +277,7 @@ function buildExplanation(
           .join("\n")
       : "No repository-wide references were found in the current bounded scan.",
     caveats: [
-      "This MVP uses deterministic local analysis and regex-based Python symbol discovery.",
+      "This MVP uses deterministic local analysis with an AST-backed Python parser when python3 is available.",
       "Repository-wide reference search is bounded and may miss dynamically generated usages."
     ],
     confidence: definitions.length > 0 ? "medium" : "low",
@@ -312,10 +296,12 @@ export async function buildSelectionContext(request: ExplainSelectionRequest): P
   const excerpt = redactSecrets(buildExcerpt(lines, request.line));
   const workspacePythonFiles = await readWorkspacePythonFiles(workspace.rootPath);
   const selectedSymbol = detectSelectedSymbol(lines, request.line, request.selectedText);
-  const localSymbols = collectPythonSymbols(file, content);
+  const workspaceAnalysis = await collectWorkspacePythonSymbols(workspacePythonFiles);
+  const workspaceSymbols = workspaceAnalysis.symbols;
+  const localSymbols = workspaceSymbols.filter((symbol) => symbol.file === file);
   const containingScopes = languageFromFile(file) === "python" ? findContainingPythonScopes(localSymbols, request.line, file) : [];
   const definitions = selectedSymbol
-    ? findSymbolDefinitions(workspacePythonFiles, selectedSymbol).map((symbol) =>
+    ? findSymbolDefinitions(workspaceSymbols, selectedSymbol).map((symbol) =>
         createSourceReference(symbol.file, symbol.line, symbol.excerpt)
       )
     : [createSourceReference(file, request.line, excerpt)];
@@ -354,7 +340,7 @@ export async function buildSelectionContext(request: ExplainSelectionRequest): P
       configuration: []
     },
     metadata: {
-      source: languageFromFile(file) === "python" ? "ast" : "text",
+      source: languageFromFile(file) === "python" && workspaceAnalysis.usedAst ? "ast" : "text",
       capabilityTier,
       confidence
     },

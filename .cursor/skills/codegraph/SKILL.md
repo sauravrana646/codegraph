@@ -14,9 +14,10 @@ The repository currently contains the first implementation scaffold:
 - VS Code/Cursor extension app in `apps/ide-vscode`
 - local runtime CLI in `apps/runtime`
 - shared protocol package in `packages/protocol`
+- AST-backed Python language intelligence in `packages/language-intelligence`
 - workspace path and identity helpers in `packages/workspace`
 - security primitives for path/symlink checks and secret redaction in `packages/security`
-- initial context assembly helper in `packages/core`
+- deterministic Python explanation assembly in `packages/core`
 
 ## Architecture rules
 
@@ -29,12 +30,11 @@ The repository currently contains the first implementation scaffold:
 
 ## Suggested next implementation order
 
-1. Strengthen Python AST parsing and symbol extraction
-2. Add logical section resolution
-3. Build deterministic tools such as `find_definition`
-4. Improve the runtime context bundle builder
-5. Add provider abstraction and explanation normalization
-6. Expand the VS Code/Cursor extension from output-channel prototype to panel-based UX
+1. Improve logical section resolution beyond current symbol scope handling
+2. Build explicit deterministic tools such as `find_definition`
+3. Improve bounded reference and related-code retrieval
+4. Add provider abstraction and explanation normalization
+5. Expand the VS Code/Cursor extension with source navigation and follow-up UX
 
 ## Useful commands
 

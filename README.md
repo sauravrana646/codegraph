@@ -11,7 +11,8 @@ This repository now contains the first usable local MVP slice:
 - `packages/protocol` — shared type contracts
 - `packages/workspace` — workspace identity and safe path helpers
 - `packages/security` — secret scanning/redaction and symlink containment checks
-- `packages/core` — deterministic Python-aware selection analysis, definition discovery, reference search, and explanation assembly
+- `packages/language-intelligence` — AST-backed Python symbol parsing through a safe `python3` bridge with fallback behavior
+- `packages/core` — deterministic Python-aware selection analysis, definition discovery, reference search, scope resolution, and explanation assembly
 - `docs/` — PRD, TDD, implementation plan, and AI-ready backlog
 - `examples/demo.py` — sample Python file for local smoke testing
 
@@ -50,6 +51,7 @@ npm run typecheck
 The runtime exposes a local CLI that:
 
 - detects a target symbol from the selection or line
+- uses AST-backed Python symbol parsing when `python3` is available
 - scans bounded Python files in the workspace
 - finds candidate definitions and references
 - assembles structured explanation output
@@ -140,7 +142,7 @@ If you want Cursor agents to use it while working in this repo:
 
 This first usable version is intentionally narrow:
 
-- Python understanding is heuristic and regex-based, not full AST parsing yet
+- Python understanding is AST-backed for symbol discovery, but still uses bounded deterministic heuristics for reference search and explanation assembly
 - workspace scanning is bounded
 - dynamic/runtime-only references will be missed
 - no model provider integration yet

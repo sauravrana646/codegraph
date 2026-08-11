@@ -5,11 +5,5 @@
     "rootDir": "src",
     "outDir": "dist"
   },
-  "references": [
-    { "path": "../language-intelligence" },
-    { "path": "../protocol" },
-    { "path": "../security" },
-    { "path": "../workspace" }
-  ],
   "include": ["src/**/*"]
 }
