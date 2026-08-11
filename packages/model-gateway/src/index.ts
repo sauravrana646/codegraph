@@ -460,23 +460,32 @@ export function applyEnrichmentText(
   };
 }
 
-/** Compact handoff prompt for Cursor Agent / chat (no API key required). */
+/** Compact handoff prompt for Cursor/Claude Agent (subscription model, no API key). */
 export function buildAgentHandoffPrompt(result: SelectionContextResultLike): string {
   const sources = (result.explanation.sources ?? [])
     .slice(0, 8)
-    .map((source) => `- ${source.file}:${source.line}`)
+    .map((source) => `- ${source.file}:${source.line}${source.excerpt ? `\n  ${source.excerpt}` : ""}`)
     .join("\n");
 
   return [
-    "You are helping with a Codegraph-grounded explanation.",
-    "Use ONLY the facts below. Do not invent files, symbols, or sources.",
-    "Do not ask for API keys. Write a clear explanation and cite file:line sources.",
+    "You are the Codegraph enrichment + explanation model for a Cursor/Claude subscription user.",
+    "No API keys are available or needed. You perform ALL generative work:",
+    "1) Enrich/improve the narrative explanation",
+    "2) Explain the code clearly to the user",
+    "",
+    "Rules:",
+    "- Use ONLY the deterministic facts below.",
+    "- Do not invent files, symbols, relationships, or sources.",
+    "- Keep facts separate from cautious inferences.",
+    "- Cite file:line from the Sources list.",
+    "- Do not ask the user for API keys.",
     "",
     `Target: ${result.context.target.file}:${result.context.target.line}${
       result.context.target.selectedText ? ` (${result.context.target.selectedText})` : ""
     }`,
     `Capability tier: ${result.metadata.capabilityTier}`,
     `Confidence: ${result.metadata.confidence}`,
+    `Resolution source: ${result.metadata.source}`,
     "",
     "Deterministic summary:",
     result.explanation.summary,
@@ -487,14 +496,21 @@ export function buildAgentHandoffPrompt(result: SelectionContextResultLike): str
     "How it works:",
     result.explanation.howItWorks ?? "(none)",
     "",
+    "Why it exists:",
+    result.explanation.whyItExists ?? "(none)",
+    "",
     "Codebase usage:",
     result.explanation.codebaseUsage ?? "(none)",
     "",
-    "Sources:",
+    "Sources (authoritative):",
     sources || "(none)",
     "",
     "Caveats:",
-    (result.explanation.caveats ?? []).map((item) => `- ${item}`).join("\n") || "(none)"
+    (result.explanation.caveats ?? []).map((item) => `- ${item}`).join("\n") || "(none)",
+    "",
+    "Respond with:",
+    "1. An enriched, clear explanation for the user",
+    "2. A short bullet list of cited sources (file:line only from above)"
   ].join("\n");
 }
 

@@ -1,34 +1,33 @@
-# Cursor plan workflow (no API keys)
+# Cursor / Claude plan workflow (agent does enrichment too)
 
-## Goal
+## Rule
 
-Use Codegraph with a Cursor subscription without configuring OpenAI/Anthropic API keys.
+Pick **one** generative path:
 
-## Architecture
+| Mode | Checkbox | LLM used for |
+| --- | --- | --- |
+| Built-in agent (default) | `useBuiltInAgent` | **All** generative work: enrichment + explanation |
+| API key provider | `useApiKeyProvider` | **All** generative work: in-panel enrichment |
 
-```text
-User selection / question
-        │
-        ├─ Extension: deterministic analysis → side panel
-        │                 └─ optional "Ask Cursor Agent" handoff
-        │
-        └─ Cursor Agent + skill/MCP: call explain_selection etc.
-                          └─ Agent model writes narrative (Cursor plan)
-```
+Deterministic tools (definitions, usages, sources, base explanation) always run locally with **no** model.
 
-- **Deterministic tools** never need a model key.
-- **Narrative quality** comes from the Cursor agent (skill path), not from `CODEGRAPH_API_KEY`.
-- Optional OpenAI-compatible enrichment is only for advanced/self-hosted setups.
+## Agent mode
 
-## Do
+1. Extension builds deterministic context.
+2. Enrichment + narrative explanation are handed to Cursor/Claude agent (subscription model).
+3. Never ask for API keys.
+4. Agent must cite only Codegraph `file:line` sources.
 
-1. Install skill + MCP (or use repo symlinks).
-2. Install extension VSIX for highlight/click UX.
-3. Ask Cursor Agent to explain/navigate code; it should call Codegraph tools with `enrich` unset/false.
-4. Use extension **Ask Cursor Agent** to paste grounded context into chat when starting from a selection.
+## API key mode
 
-## Do not
+1. Extension builds deterministic context.
+2. Enrichment runs via OpenAI-compatible provider using the configured API key.
+3. Panel shows enriched narrative fields; sources stay deterministic.
 
-1. Ask the user for model API keys for normal Cursor use.
-2. Call tools with `enrich: true` on Cursor plan workflows.
-3. Invent sources beyond Codegraph citations.
+## Skill behavior
+
+When this skill is active inside Cursor/Claude Agent:
+
+- Call tools with `enrich` omitted/false (you are the enrichment model).
+- Write enriched explanation yourself from the tool envelope.
+- Do not request `CODEGRAPH_API_KEY` / `OPENAI_API_KEY`.

@@ -17,19 +17,22 @@ Prefer Codegraph over guessing from a few open files when the user asks what cod
 
 ## Cursor plan users (no API keys)
 
-This is the default path for Cursor.
+This is the default path for Cursor/Claude subscriptions.
 
 1. **Never ask** for `CODEGRAPH_API_KEY`, `OPENAI_API_KEY`, or any provider key.
-2. **Never set** `enrich: true` on tools. Deterministic tools are enough.
-3. Call Codegraph tools for facts/sources/confidence.
-4. **You are the model**: write the narrative explanation yourself from the tool envelope using the Cursor plan model.
-5. Keep facts (`data`, `metadata`, sources) separate from your inferences.
-6. Cite only `file:line` values returned by Codegraph.
+2. **Never set** `enrich: true` on tools — **you** perform enrichment + explanation.
+3. Call Codegraph tools for deterministic facts/sources/confidence.
+4. Enrich the narrative yourself, then explain clearly to the user.
+5. Cite only `file:line` values returned by Codegraph.
 
-Extension UI and agent skill are complementary:
+See [references/cursor-plan.md](references/cursor-plan.md).
 
-- Extension gathers selection / shows deterministic panel / can hand context to Cursor Agent.
-- Skill + MCP lets you call the same tools and narrate without keys.
+Extension checkboxes:
+
+- **Built-in Cursor/Claude agent** → subscription model for enrichment + explanation
+- **API key provider** → OpenAI-compatible key for enrichment
+
+Only one should be enabled.
 
 ## When to activate
 

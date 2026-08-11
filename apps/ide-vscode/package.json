@@ -59,12 +59,17 @@
         "codegraph.modelAccess.useBuiltInAgent": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Use **built-in Cursor/Claude agent** for narrative explanations (no API key). Recommended for Cursor plans."
+          "markdownDescription": "Use **built-in Cursor/Claude agent** for ALL generative work (explanation + enrichment). No API key. Recommended for subscription plans. Mutually exclusive with API key provider."
         },
         "codegraph.modelAccess.useApiKeyProvider": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Use an **API key provider** (OpenAI-compatible) for in-panel enrichment. Requires `codegraph.enrichment.apiKey` or `OPENAI_API_KEY`."
+          "markdownDescription": "Use an **API key provider** for ALL generative work (explanation enrichment in-panel). Requires `codegraph.enrichment.apiKey` or `OPENAI_API_KEY`. Mutually exclusive with built-in agent."
+        },
+        "codegraph.modelAccess.autoEnrichOnExplain": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When built-in agent mode is on, automatically hand off enrichment + explanation to the agent after Explain Selection."
         },
         "codegraph.enrichment.enabled": {
           "type": "boolean",

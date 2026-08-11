@@ -321,14 +321,15 @@ Current behavior:
 Useful settings:
 
 ```text
-codegraph.modelAccess.useBuiltInAgent      # checkbox: Cursor/Claude agent, no API key (default on)
-codegraph.modelAccess.useApiKeyProvider    # checkbox: OpenAI-compatible API key enrichment (default off)
-codegraph.enrichment.apiKey
+codegraph.modelAccess.useBuiltInAgent      # agent does enrichment + explanation (default on)
+codegraph.modelAccess.useApiKeyProvider    # API key does enrichment (default off)
+codegraph.modelAccess.autoEnrichOnExplain  # auto handoff to agent after Explain (default on)
+codegraph.enrichment.apiKey                # only for API key mode
 codegraph.enrichment.baseUrl
 codegraph.enrichment.model
 ```
 
-The Explain panel also shows these two checkboxes live. For Cursor plans, keep **Built-in agent** on and **API key provider** off, then use **Ask Cursor/Claude Agent**.
+Pick one path: **agent** (subscription) or **API key**. The Explain panel checkboxes enforce that.
 
 Useful commands in Cursor/VS Code:
 

@@ -160,6 +160,7 @@ function getActiveRequest():
 function modelAccessConfig(): {
   useBuiltInAgent: boolean;
   useApiKeyProvider: boolean;
+  autoEnrichOnExplain: boolean;
   preferIdeHost: boolean;
   apiKey?: string;
   baseUrl: string;
@@ -171,10 +172,20 @@ function modelAccessConfig(): {
     enrichment.get<string>("apiKey")?.trim() || process.env.OPENAI_API_KEY || process.env.CODEGRAPH_API_KEY;
   const legacyEnabled = Boolean(enrichment.get<boolean>("enabled"));
 
+  let useApiKeyProvider = Boolean(access.get<boolean>("useApiKeyProvider")) || legacyEnabled;
+  let useBuiltInAgent = access.get<boolean>("useBuiltInAgent") !== false;
+
+  // Prefer a single active LLM path: API key wins if explicitly enabled.
+  if (useApiKeyProvider) {
+    useBuiltInAgent = false;
+  } else if (!useBuiltInAgent && !useApiKeyProvider) {
+    useBuiltInAgent = true;
+  }
+
   return {
-    useBuiltInAgent: access.get<boolean>("useBuiltInAgent") !== false,
-    // New checkbox wins; legacy enrichment.enabled still turns API mode on if set.
-    useApiKeyProvider: Boolean(access.get<boolean>("useApiKeyProvider")) || legacyEnabled,
+    useBuiltInAgent,
+    useApiKeyProvider,
+    autoEnrichOnExplain: access.get<boolean>("autoEnrichOnExplain") !== false,
     preferIdeHost: enrichment.get<boolean>("preferIdeHost") !== false,
     apiKey: apiKey || undefined,
     baseUrl: String(enrichment.get<string>("baseUrl") ?? "https://api.openai.com/v1"),
@@ -188,15 +199,15 @@ function enrichmentStatusLabel(enrichment?: EnrichmentMetadata): string {
   }
 
   if (enrichment.used) {
-    return enrichment.model ? `ok:${enrichment.model}` : "ok";
+    return enrichment.provider === "cursor-agent" || enrichment.provider === "agent"
+      ? `agent:${enrichment.model ?? "plan"}`
+      : enrichment.model
+        ? `ok:${enrichment.model}`
+        : "ok";
   }
 
-  if (enrichment.error?.includes("not requested") || enrichment.error?.includes("agent mode")) {
-    return "agent";
-  }
-
-  if (enrichment.error?.includes("cursor-agent") || enrichment.error?.includes("Ask Cursor")) {
-    return "agent";
+  if (enrichment.error?.includes("handed off") || enrichment.error?.includes("agent")) {
+    return "agent_enrichment";
   }
 
   if (enrichment.error?.includes("not configured") || enrichment.error?.includes("API_KEY")) {
@@ -248,58 +259,91 @@ async function enrichWithIdeHost(result: SelectionContext): Promise<EnrichedSele
   });
 }
 
-async function maybeEnrichSelection(deterministic: SelectionContext): Promise<EnrichedSelectionContext> {
+async function enrichViaApiKey(deterministic: SelectionContext): Promise<EnrichedSelectionContext> {
   const access = modelAccessConfig();
 
-  // API key provider mode: enrich in-panel via IDE host models and/or API key.
+  if (access.preferIdeHost) {
+    try {
+      const hostEnriched = await enrichWithIdeHost(deterministic);
+      if (hostEnriched?.enrichment.used) {
+        return hostEnriched;
+      }
+    } catch {
+      // Fall through to API key provider.
+    }
+  }
+
+  if (!access.apiKey) {
+    return {
+      ...deterministic,
+      enrichment: {
+        used: false,
+        error: "API key provider enabled but no API key is configured."
+      }
+    };
+  }
+
+  return enrichSelectionContext(deterministic, {
+    enabled: true,
+    trustProviderConfig: true,
+    provider: {
+      apiKey: access.apiKey,
+      baseUrl: access.baseUrl,
+      model: access.model
+    }
+  });
+}
+
+async function enrichViaAgent(
+  deterministic: SelectionContext,
+  options?: { handOff?: boolean }
+): Promise<EnrichedSelectionContext> {
+  const enriched: EnrichedSelectionContext = {
+    ...deterministic,
+    enrichment: {
+      used: false,
+      provider: "cursor-agent",
+      model: "subscription",
+      error: "Enrichment handed off to Cursor/Claude agent (subscription model)."
+    }
+  };
+
+  if (options?.handOff !== false) {
+    await handOffToCursorAgent(buildAskAgentQuery(enriched));
+  }
+
+  return enriched;
+}
+
+async function maybeEnrichSelection(
+  deterministic: SelectionContext,
+  options?: { handOffAgent?: boolean }
+): Promise<EnrichedSelectionContext> {
+  const access = modelAccessConfig();
+
   if (access.useApiKeyProvider) {
-    if (access.preferIdeHost) {
-      try {
-        const hostEnriched = await enrichWithIdeHost(deterministic);
-        if (hostEnriched?.enrichment.used) {
-          return hostEnriched;
-        }
-      } catch {
-        // Fall through to API key provider.
-      }
-    }
+    return enrichViaApiKey(deterministic);
+  }
 
-    if (!access.apiKey) {
-      return {
-        ...deterministic,
-        enrichment: {
-          used: false,
-          error: "API key provider enabled but no API key is configured."
-        }
-      };
-    }
-
-    return enrichSelectionContext(deterministic, {
-      enabled: true,
-      trustProviderConfig: true,
-      provider: {
-        apiKey: access.apiKey,
-        baseUrl: access.baseUrl,
-        model: access.model
-      }
+  if (access.useBuiltInAgent) {
+    return enrichViaAgent(deterministic, {
+      handOff: options?.handOffAgent ?? access.autoEnrichOnExplain
     });
   }
 
-  // Built-in agent mode (default): deterministic panel only; narrative via Cursor/Claude agent.
   return {
     ...deterministic,
     enrichment: {
       used: false,
-      error: access.useBuiltInAgent
-        ? "Built-in agent mode. Use Ask Cursor/Claude Agent for narrative (no API key)."
-        : "Model access disabled. Enable Built-in Agent or API Key Provider in Codegraph settings."
+      error: "Model access disabled. Enable Built-in Agent or API Key Provider."
     }
   };
 }
 
 function buildAskAgentQuery(result: EnrichedSelectionContext): string {
   return [
-    "Use the Codegraph skill if available. Explain this selection using only the grounded facts below.",
+    "Use the Codegraph skill if available.",
+    "You are performing Codegraph enrichment AND explanation via the Cursor/Claude subscription model.",
     "Do not ask for API keys.",
     "",
     buildAgentHandoffPrompt(result)
@@ -340,7 +384,7 @@ async function runAskCursorAgent(
   const access = modelAccessConfig();
   if (!access.useBuiltInAgent) {
     void vscode.window.showWarningMessage(
-      "Built-in agent access is disabled. Enable the checkbox “Use built-in Cursor/Claude agent” in the Codegraph panel or settings."
+      "Built-in agent access is disabled. Enable “Built-in Cursor/Claude agent” (and turn off API key provider)."
     );
     return;
   }
@@ -354,7 +398,7 @@ async function runAskCursorAgent(
 
   if (!result || !sameTarget) {
     const deterministic = await buildSelectionContext(request);
-    result = await maybeEnrichSelection(deterministic);
+    result = await maybeEnrichSelection(deterministic, { handOffAgent: false });
   }
 
   currentSession = { request, result };
@@ -478,28 +522,48 @@ async function handlePanelMessage(message: unknown): Promise<void> {
 
   if (parsed.type === "setModelAccess") {
     const config = vscode.workspace.getConfiguration("codegraph.modelAccess");
-    if (typeof parsed.useBuiltInAgent === "boolean") {
-      await config.update("useBuiltInAgent", parsed.useBuiltInAgent, vscode.ConfigurationTarget.Workspace);
+    let useBuiltInAgent = Boolean(parsed.useBuiltInAgent);
+    let useApiKeyProvider = Boolean(parsed.useApiKeyProvider);
+
+    // Mutual exclusion: one generative path at a time.
+    if (useApiKeyProvider && useBuiltInAgent) {
+      // Prefer whichever checkbox the user just enabled if we can detect it;
+      // otherwise prefer API key when both true from the message.
+      useBuiltInAgent = false;
     }
-    if (typeof parsed.useApiKeyProvider === "boolean") {
-      await config.update("useApiKeyProvider", parsed.useApiKeyProvider, vscode.ConfigurationTarget.Workspace);
-      // Keep legacy flag aligned so older docs/settings stay consistent.
-      await vscode.workspace
-        .getConfiguration("codegraph.enrichment")
-        .update("enabled", parsed.useApiKeyProvider, vscode.ConfigurationTarget.Workspace);
+    if (!useApiKeyProvider && !useBuiltInAgent) {
+      useBuiltInAgent = true;
     }
 
+    await config.update("useBuiltInAgent", useBuiltInAgent, vscode.ConfigurationTarget.Workspace);
+    await config.update("useApiKeyProvider", useApiKeyProvider, vscode.ConfigurationTarget.Workspace);
+    await vscode.workspace
+      .getConfiguration("codegraph.enrichment")
+      .update("enabled", useApiKeyProvider, vscode.ConfigurationTarget.Workspace);
+
     if (panel && currentSession) {
+      // Re-run enrichment for the current session under the new mode.
+      const deterministic: SelectionContext = {
+        workspace: currentSession.result.workspace,
+        context: currentSession.result.context,
+        metadata: currentSession.result.metadata,
+        explanation: currentSession.result.explanation
+      };
+      const refreshed = await maybeEnrichSelection(deterministic, {
+        handOffAgent: useBuiltInAgent && modelAccessConfig().autoEnrichOnExplain
+      });
+      currentSession = { request: currentSession.request, result: refreshed };
       panel.webview.html = renderExplanationHtml(
         currentSession.request.filePath,
         currentSession.request.line,
-        currentSession.result
+        refreshed
       );
     }
 
-    const access = modelAccessConfig();
     void vscode.window.showInformationMessage(
-      `Codegraph model access: agent=${access.useBuiltInAgent ? "on" : "off"}, apiKey=${access.useApiKeyProvider ? "on" : "off"}`
+      useApiKeyProvider
+        ? "Codegraph will use API key provider for enrichment."
+        : "Codegraph will use Cursor/Claude agent for enrichment + explanation."
     );
   }
 }
@@ -554,15 +618,15 @@ function renderExplanationHtml(
   const enrichmentLabel = enrichmentStatusLabel(result.enrichment);
   const modeNote = access.useApiKeyProvider
     ? access.apiKey
-      ? "API key provider enabled for in-panel enrichment."
-      : "API key provider enabled, but no API key is configured yet."
+      ? "API key mode: enrichment runs through your OpenAI-compatible provider."
+      : "API key mode is on, but no API key is configured yet."
     : access.useBuiltInAgent
-      ? "Built-in Cursor/Claude agent mode (no API key). Use Ask Cursor/Claude Agent for narrative."
-      : "Both model access options are off. Deterministic results only.";
+      ? "Agent mode: enrichment + explanation run through Cursor/Claude agent (subscription, no API key)."
+      : "Model access disabled.";
 
   const enrichmentNote = result.enrichment?.used
-    ? `<p class="muted">Model enrichment applied (${escapeHtml(result.enrichment.provider ?? "provider")} / ${escapeHtml(result.enrichment.model ?? "model")}). Sources remain deterministic.</p>`
-    : `<p class="muted">${escapeHtml(modeNote)}</p>`;
+    ? `<p class="muted">Enrichment applied via ${escapeHtml(result.enrichment.provider ?? "provider")} / ${escapeHtml(result.enrichment.model ?? "model")}. Sources remain deterministic.</p>`
+    : `<p class="muted">${escapeHtml(modeNote)}${result.enrichment?.error ? ` ${escapeHtml(result.enrichment.error)}` : ""}</p>`;
 
   return `<!DOCTYPE html>
   <html lang="en">
@@ -654,20 +718,20 @@ function renderExplanationHtml(
       </p>
 
       <div class="mode-box">
-        <strong>Model access</strong>
+        <strong>Model access (pick one)</strong>
         <label>
           <input id="useBuiltInAgent" type="checkbox" ${access.useBuiltInAgent ? "checked" : ""} />
-          <span>Use built-in Cursor/Claude agent <span class="muted">(no API key — Cursor plan)</span></span>
+          <span>Built-in Cursor/Claude agent <span class="muted">— enrichment + explanation via subscription (no API key)</span></span>
         </label>
         <label>
           <input id="useApiKeyProvider" type="checkbox" ${access.useApiKeyProvider ? "checked" : ""} />
-          <span>Use API key provider <span class="muted">(OpenAI-compatible enrichment)</span></span>
+          <span>API key provider <span class="muted">— enrichment via OpenAI-compatible key</span></span>
         </label>
       </div>
 
       ${enrichmentNote}
       <div class="actions">
-        <button class="action-button" data-action="askCursorAgent">Ask Cursor/Claude Agent</button>
+        <button class="action-button" data-action="askCursorAgent">Enrich &amp; Explain with Agent</button>
         <button class="action-button" data-action="findDefinition">Find Definition</button>
         <button class="action-button" data-action="findUsages">Find Usages</button>
       </div>
@@ -744,15 +808,21 @@ function renderExplanationHtml(
         });
         const agentBox = document.getElementById("useBuiltInAgent");
         const apiBox = document.getElementById("useApiKeyProvider");
-        function emitAccess() {
+        function emitAccess(changed) {
+          if (changed === "agent" && agentBox && agentBox.checked && apiBox) {
+            apiBox.checked = false;
+          }
+          if (changed === "api" && apiBox && apiBox.checked && agentBox) {
+            agentBox.checked = false;
+          }
           vscode.postMessage({
             type: "setModelAccess",
             useBuiltInAgent: Boolean(agentBox && agentBox.checked),
             useApiKeyProvider: Boolean(apiBox && apiBox.checked)
           });
         }
-        if (agentBox) agentBox.addEventListener("change", emitAccess);
-        if (apiBox) apiBox.addEventListener("change", emitAccess);
+        if (agentBox) agentBox.addEventListener("change", () => emitAccess("agent"));
+        if (apiBox) apiBox.addEventListener("change", () => emitAccess("api"));
       </script>
     </body>
   </html>`;
