@@ -1,5 +1,7 @@
 # Codegraph VS Code / Cursor extension
 
+![Codegraph icon](media/icon-256.png)
+
 Importable IDE extension for local Python-first code understanding.
 
 ## Install from VSIX
