@@ -46,6 +46,7 @@ let currentSession: CodeUnderstandingSession | undefined;
 let panelMessageHooked = false;
 let liveExplainEnabled = false;
 let liveExplainStatusBar: vscode.StatusBarItem | undefined;
+let explainDepthStatusBar: vscode.StatusBarItem | undefined;
 let liveExplainTimer: NodeJS.Timeout | undefined;
 let liveExplainGeneration = 0;
 let extensionContext: vscode.ExtensionContext | undefined;
@@ -108,14 +109,32 @@ function updateLiveExplainStatusBar(): void {
   }
 
   liveExplainStatusBar.text = liveExplainEnabled
-    ? "$(type-hierarchy) Codegraph Live: ON"
-    : "$(type-hierarchy-sub) Codegraph Live: OFF";
+    ? "$(eye) Codegraph Live: ON"
+    : "$(eye-closed) Codegraph Live: OFF";
   liveExplainStatusBar.tooltip = liveExplainEnabled
-    ? "Live Explain ON — move cursor; Agent answers automatically in Agent chat."
-    : "Live Explain OFF. Click to turn on automatic explanations.";
+    ? "Live Explain ON — click to turn OFF"
+    : "Live Explain OFF — click to turn ON";
   liveExplainStatusBar.backgroundColor = liveExplainEnabled
     ? new vscode.ThemeColor("statusBarItem.warningBackground")
     : undefined;
+  liveExplainStatusBar.show();
+}
+
+function updateExplainDepthStatusBar(): void {
+  if (!explainDepthStatusBar) {
+    return;
+  }
+
+  const depth = explainDepthSetting();
+  const label = depth === "short" ? "Short" : depth === "deep" ? "Deep" : "Standard";
+  explainDepthStatusBar.text = `$(list-flat) Depth: ${label}`;
+  explainDepthStatusBar.tooltip = `Explain depth: ${label}. Click to change (Short / Standard / Deep).`;
+  explainDepthStatusBar.show();
+}
+
+function updateCodegraphStatusBars(): void {
+  updateLiveExplainStatusBar();
+  updateExplainDepthStatusBar();
 }
 
 function logCodegraph(message: string, show = false): void {
@@ -271,14 +290,20 @@ export function activate(context: vscode.ExtensionContext): void {
 
   liveExplainStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   liveExplainStatusBar.command = "codegraph.toggleLiveExplain";
+  liveExplainStatusBar.name = "Codegraph Live Explain";
   liveExplainStatusBar.show();
+
+  explainDepthStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
+  explainDepthStatusBar.command = "codegraph.setExplainDepth";
+  explainDepthStatusBar.name = "Codegraph Explain Depth";
+  explainDepthStatusBar.show();
 
   const saved =
     context.workspaceState.get<boolean>("codegraph.liveExplain.enabled") ??
     vscode.workspace.getConfiguration("codegraph.liveExplain").get<boolean>("enabled") ??
     false;
   liveExplainEnabled = Boolean(saved);
-  updateLiveExplainStatusBar();
+  updateCodegraphStatusBars();
   setLiveBridgeEnabled(liveExplainEnabled);
 
   const toggleLiveCommand = vscode.commands.registerCommand("codegraph.toggleLiveExplain", async () => {
@@ -446,10 +471,14 @@ export function activate(context: vscode.ExtensionContext): void {
       .getConfiguration("codegraph.explain")
       .update("depth", picked.depth, vscode.ConfigurationTarget.Workspace);
     lastLiveExplainKey = "";
+    updateExplainDepthStatusBar();
     void vscode.window.showInformationMessage(`Explain depth: ${picked.label}`);
   });
 
   const configListener = vscode.workspace.onDidChangeConfiguration(async (event) => {
+    if (event.affectsConfiguration("codegraph.explain.depth")) {
+      updateExplainDepthStatusBar();
+    }
     if (!event.affectsConfiguration("codegraph.enrichment.provider")) {
       return;
     }
@@ -499,6 +528,7 @@ export function activate(context: vscode.ExtensionContext): void {
     selectionListener,
     editorListener,
     liveExplainStatusBar,
+    explainDepthStatusBar,
     getOutputChannel(),
     {
       dispose: () => {
@@ -528,6 +558,8 @@ export function deactivate(): void {
   panelMessageHooked = false;
   liveExplainStatusBar?.dispose();
   liveExplainStatusBar = undefined;
+  explainDepthStatusBar?.dispose();
+  explainDepthStatusBar = undefined;
   extensionContext = undefined;
 }
 
@@ -1371,6 +1403,7 @@ async function handlePanelMessage(message: unknown): Promise<void> {
       .getConfiguration("codegraph.explain")
       .update("depth", depth, vscode.ConfigurationTarget.Workspace);
     lastLiveExplainKey = "";
+    updateExplainDepthStatusBar();
     void vscode.window.showInformationMessage(`Explain depth: ${depth}`);
     if (panel && currentSession && extensionContext) {
       panel.webview.html = renderExplanationHtml(

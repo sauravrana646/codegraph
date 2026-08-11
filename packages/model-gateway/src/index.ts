@@ -335,7 +335,13 @@ function buildEnrichmentPrompt(
     depth === "short"
       ? "Keep whyItExists to 2-4 sentences; whatItDoes can be a short bullet list; howItWorks one short note."
       : depth === "deep"
-        ? "Be thorough: fields table, shapes/examples, validators, nearby module connections, and caveats."
+        ? [
+            "Deep tutoring mode:",
+            "whyItExists must cover the real use case and what problem this solves;",
+            "whatItDoes should include a concrete example (input → behavior → result) and a fields table when applicable;",
+            "howItWorks must explain why this design over simpler alternatives (what those alternatives are, why they fall short, why this way is better), plus edge cases and nearby connections;",
+            "codebaseUsage should mention realistic call sites / workflows."
+          ].join(" ")
         : "Use standard tutoring depth: purpose, fields table when useful, notes, and brief usage.";
 
   return {
@@ -582,15 +588,21 @@ function answerFormatForDepth(depth: ExplainDepth): string[] {
   }
   if (depth === "deep") {
     return [
-      "ANSWER FORMAT (deep):",
+      "ANSWER FORMAT (deep — teach the design, not just the syntax):",
       "1) Location + short code citation",
-      "2) Purpose",
-      "3) Fields table (Field | Meaning) when applicable",
-      "4) Valid shapes / examples",
-      "5) Docstring/validator notes",
-      "6) How it connects to nearby modules",
-      "7) Caveats / edge cases",
-      "8) End with: Ask about that, or keep moving."
+      "2) Purpose — what problem this solves in the product/workflow",
+      "3) Concrete example / use case (realistic input → what happens → result)",
+      "4) Fields / API surface table when applicable (Field | Meaning | Why it exists)",
+      "5) Why this approach — what simpler alternatives exist (plain dict, ad-hoc validation, different pattern) and why they are weaker here",
+      "6) Why this way is better — tradeoffs it accepts and benefits it buys (safety, clarity, reuse, invariants)",
+      "7) Valid shapes / edge cases / failure modes",
+      "8) How it connects to nearby modules/callers",
+      "9) End with: Ask about that, or keep moving.",
+      "",
+      "Deep mode rules:",
+      "- Prefer design rationale over restating the code line-by-line.",
+      "- Always include at least one concrete example and an explicit “why not simpler?” comparison.",
+      "- Do not invent files/APIs; ground claims in the source you read."
     ];
   }
   return [
