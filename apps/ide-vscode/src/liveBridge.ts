@@ -59,47 +59,27 @@ function appendWake(dir: string, state: LiveCursorState): void {
   fs.appendFileSync(path.join(dir, "wake.log"), `${line}\n`, "utf8");
 }
 
-function writePendingPrompt(
-  dir: string,
-  state: LiveCursorState,
-  grounded?: {
-    summary?: string;
-    whatItDoes?: string;
-    whyItExists?: string;
-    howItWorks?: string;
-    codebaseUsage?: string;
-    sources?: string[];
-  }
-): void {
+function writePendingPrompt(dir: string, state: LiveCursorState): void {
   ensureDir(dir);
   // Slim pointer only — Agent pulls AST/LSP facts via Codegraph tools (token-efficient).
-  const hintSources = (grounded?.sources ?? []).slice(0, 3);
   const prompt = [
+    "codegraph-slim-v2",
     "Use the Codegraph skill / MCP tools.",
     "Codegraph Live Explain — answer in this Agent chat.",
     "Do not ask for API keys.",
-    "Do NOT wait for large pasted code; fetch what you need with tools.",
+    "Do NOT paste or wait for large code dumps; fetch with tools.",
     "",
     "TARGET:",
     `rootPath: ${state.rootPath}`,
     `filePath: ${state.filePath}`,
     `line: ${state.line}`,
     `symbol: ${state.selection || "(cursor only)"}`,
-    hintSources.length ? `sourceHints: ${hintSources.join(", ")}` : "sourceHints: (resolve via tools)",
     "",
     "REQUIRED TOOL FLOW (pull data yourself):",
-    "1) Call Codegraph `explain_selection` with enrich omitted/false for this filePath/line/symbol.",
+    "1) Call Codegraph `explain_selection` with enrich omitted/false.",
     "2) If needed, call `find_definition` and/or `find_usages`.",
     "3) Optionally `logical_section` for surrounding class/function.",
     "4) Only after tools return, write the tutoring answer.",
-    "",
-    "ANSWER FORMAT (learn-codebase style):",
-    "1) Location + short code citation (from tool sources only)",
-    "2) Purpose",
-    "3) Fields table (Field | Meaning) when applicable",
-    "4) Valid shapes / examples when useful",
-    "5) Docstring/validator notes",
-    "6) End with: Ask about that, or keep moving.",
     "",
     "Rules: cite only tool file:line sources; never invent files/symbols; keep it concise."
   ].join("\n");
@@ -187,7 +167,7 @@ export function publishLiveCursorState(input: {
     for (const dir of dirs) {
       writeState(dir, state);
       appendWake(dir, state);
-      writePendingPrompt(dir, state, input.grounded);
+      writePendingPrompt(dir, state);
     }
 
     return state;

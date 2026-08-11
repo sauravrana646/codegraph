@@ -6,9 +6,10 @@ import * as path from "node:path";
 import { buildSelectionContext, findDefinition, findUsages } from "@codegraph/core";
 import {
   applyEnrichmentText,
-  buildAgentHandoffPrompt,
+  buildPointerAgentHandoffPrompt,
   buildHostEnrichmentPrompt,
   enrichSelectionContext,
+  SLIM_HANDOFF_MARKER,
   type EnrichmentMetadata,
   type EnrichedSelectionContext as GatewayEnrichedSelectionContext
 } from "@codegraph/model-gateway";
@@ -230,8 +231,15 @@ export function activate(context: vscode.ExtensionContext): void {
     const editor = vscode.window.activeTextEditor;
     const access = modelAccessConfig();
     const request = getActiveRequest({ quiet: true });
-    const enabledPath = path.join(os.homedir(), ".cursor", "codegraph", "enabled");
+    const bridgeDir = path.join(os.homedir(), ".cursor", "codegraph");
+    const enabledPath = path.join(bridgeDir, "enabled");
+    const pendingPath = path.join(bridgeDir, "pending-prompt.md");
+    const packageJson = JSON.parse(
+      fs.readFileSync(path.join(context.extensionPath, "package.json"), "utf8")
+    ) as { version?: string };
+
     logCodegraph("=== Codegraph diagnose ===", true);
+    logCodegraph(`extensionVersion=${packageJson.version ?? "unknown"} marker=${SLIM_HANDOFF_MARKER}`);
     logCodegraph(`liveEnabled=${liveExplainEnabled}`);
     logCodegraph(
       `agent=${access.useBuiltInAgent} apiKey=${access.useApiKeyProvider} autoSubmit=${vscode.workspace
@@ -244,9 +252,45 @@ export function activate(context: vscode.ExtensionContext): void {
     logCodegraph(`workspaceRequest=${request ? `${request.filePath}:${request.line}` : "(none)"}`);
     logCodegraph(`parser=${process.env.CODEGRAPH_PYTHON_PARSER ?? "(unset)"}`);
     logCodegraph(`bridgeEnabled exists=${fs.existsSync(enabledPath)}`);
+
+    if (request) {
+      const expected = buildPointerAgentHandoffPrompt(request);
+      logCodegraph(`expectedHandoffChars=${expected.length}`);
+      logCodegraph("--- expected slim prompt ---");
+      logCodegraph(expected);
+      logCodegraph("--- end expected ---");
+      if (!expected.startsWith(SLIM_HANDOFF_MARKER) || expected.includes("AST facts") || expected.includes("AST symbol")) {
+        logCodegraph("ERROR: expected prompt is not slim — extension build is wrong.", true);
+      }
+    }
+
+    if (fs.existsSync(pendingPath)) {
+      const pending = fs.readFileSync(pendingPath, "utf8");
+      logCodegraph(`pending-prompt.md chars=${pending.length}`);
+      logCodegraph("--- pending-prompt.md ---");
+      logCodegraph(pending.slice(0, 1200));
+      logCodegraph("--- end pending ---");
+      if (
+        pending.includes("AST facts") ||
+        pending.includes("AST symbol") ||
+        pending.includes("Deterministic Codegraph facts") ||
+        !pending.includes(SLIM_HANDOFF_MARKER)
+      ) {
+        logCodegraph(
+          "WARNING: pending-prompt.md looks OLD/fat. Reinstall VSIX from latest mvp, Reload Window, toggle Live Explain OFF→ON.",
+          true
+        );
+        void vscode.window.showWarningMessage(
+          "Codegraph: pending-prompt.md is still fat/old. Reinstall the new VSIX (0.1.1+), Reload Window, toggle Live OFF→ON."
+        );
+      }
+    } else {
+      logCodegraph("pending-prompt.md missing (will be written on next Live tick)");
+    }
+
     if (request && extensionContext) {
       void vscode.window.showInformationMessage(
-        "Codegraph diagnose: forcing one Live explain now. Watch Output → Codegraph and Agent chat."
+        `Codegraph diagnose ${SLIM_HANDOFF_MARKER}: forcing one Live explain. Watch Output → Codegraph; Agent prompt must start with ${SLIM_HANDOFF_MARKER}.`
       );
       await runExplainSelection(extensionContext, request, { live: true, handOffAgent: true });
     } else {
@@ -554,13 +598,18 @@ async function enrichViaApiKey(deterministic: SelectionContext): Promise<Enriche
 }
 
 async function enrichViaAgent(
+  request: { rootPath: string; filePath: string; line: number; selectedText?: string },
   grounded: SelectionContext,
   options?: { handOff?: boolean; forceNewChat?: boolean }
 ): Promise<EnrichedSelectionContext> {
+  const prompt = buildPointerAgentHandoffPrompt(request);
+  logCodegraph(`Agent prompt ${SLIM_HANDOFF_MARKER} chars=${prompt.length}`);
+  logCodegraph(prompt);
+
   const handedOff =
     options?.handOff === false
       ? false
-      : await handOffToCursorAgent(buildAskAgentQuery(grounded), {
+      : await handOffToCursorAgent(prompt, {
           forceNew: options?.forceNewChat
         });
 
@@ -571,7 +620,7 @@ async function enrichViaAgent(
       provider: "cursor-agent",
       model: "subscription",
       error: handedOff
-        ? "Context auto-sent to Cursor Agent — answer appears in Agent chat."
+        ? `Slim ${SLIM_HANDOFF_MARKER} auto-sent (${prompt.length} chars). Answer appears in Agent chat.`
         : "Auto-send to Agent failed. On macOS, allow Accessibility for Cursor/osascript, then retry."
     }
   };
@@ -584,6 +633,15 @@ async function handOffToCursorAgent(
   prompt: string,
   options?: { forceNew?: boolean }
 ): Promise<boolean> {
+  if (!prompt.startsWith(SLIM_HANDOFF_MARKER)) {
+    logCodegraph("Refusing handoff: prompt missing slim marker", true);
+    return false;
+  }
+  if (prompt.includes("AST facts") || prompt.includes("AST symbol") || prompt.includes("Deterministic Codegraph facts")) {
+    logCodegraph("Refusing handoff: prompt still contains AST dump markers", true);
+    return false;
+  }
+
   const ok = await autoSendToCursorAgent(prompt, {
     forceNew: options?.forceNew,
     log: (message) => getOutputChannel().appendLine(message)
@@ -592,14 +650,6 @@ async function handOffToCursorAgent(
     agentChatOpened = true;
   }
   return ok;
-}
-
-function buildAskAgentQuery(result: SelectionContext | EnrichedSelectionContext): string {
-  // Always-on Agent call with a *small* prompt. Agent pulls code via Codegraph tools.
-  return [
-    "Use the Codegraph skill / MCP tools.",
-    buildAgentHandoffPrompt(result)
-  ].join("\n");
 }
 
 function dedupeSourceLike(items: SourceLike[]): SourceLike[] {
@@ -683,6 +733,7 @@ async function gatherGroundedContext(
 }
 
 async function enrichGroundedContext(
+  request: { rootPath: string; filePath: string; line: number; selectedText?: string },
   grounded: SelectionContext,
   options?: { live?: boolean; handOffAgent?: boolean }
 ): Promise<EnrichedSelectionContext> {
@@ -714,7 +765,7 @@ async function enrichGroundedContext(
       lastAgentHandOffMs = now;
     }
 
-    return enrichViaAgent(grounded, {
+    return enrichViaAgent(request, grounded, {
       handOff: shouldHandOff,
       forceNewChat: !agentChatOpened
     });
@@ -749,14 +800,14 @@ async function runAskCursorAgent(
       enrichment: {
         used: false,
         provider: "cursor-agent",
-        error: "Sending AST/LSP context to Agent chat…"
+        error: "Sending slim pointer to Agent chat…"
       }
     }
   };
 
   // Agent mode: answer appears only in Agent chat — no side panel.
   lastAgentHandOffMs = Date.now();
-  await enrichViaAgent(grounded, { handOff: true, forceNewChat: true });
+  await enrichViaAgent(request, grounded, { handOff: true, forceNewChat: true });
 }
 
 async function runExplainSelection(
@@ -792,7 +843,7 @@ async function runExplainSelection(
   //    API key mode → enrich in-panel.
   if (agentMode) {
     logCodegraph(`Agent mode explain for ${request.filePath}:${request.line} (live=${live})`, true);
-    const result = await enrichGroundedContext(grounded, {
+    const result = await enrichGroundedContext(request, grounded, {
       live,
       handOffAgent: options?.handOffAgent ?? true
     });
@@ -824,7 +875,7 @@ async function runExplainSelection(
   currentSession = { request, result: pending };
   renderExplainPanel(context, request, pending, { live, announce: false });
 
-  const result = await enrichGroundedContext(grounded, { live, handOffAgent: false });
+  const result = await enrichGroundedContext(request, grounded, { live, handOffAgent: false });
   if (live && generation !== liveExplainGeneration) {
     return;
   }

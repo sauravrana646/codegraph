@@ -35,6 +35,32 @@ function logicalSectionMetadata(confidence: number): ResolutionMetadata {
   };
 }
 
+function slimSource(item: { file: string; line: number; excerpt?: string; kind?: string; score?: number }) {
+  return {
+    file: item.file,
+    line: item.line,
+    kind: item.kind,
+    score: item.score,
+    excerpt: item.excerpt ? item.excerpt.trim().slice(0, 160) : undefined
+  };
+}
+
+/** Compact tool payload so Agent does not drown in full file excerpts. */
+function slimExplainPayload(enriched: Awaited<ReturnType<typeof enrichSelectionContext>>) {
+  return {
+    workspace: { rootPath: enriched.workspace.rootPath, id: enriched.workspace.id },
+    target: enriched.context.target,
+    definitions: enriched.context.definitions.slice(0, 6).map(slimSource),
+    references: enriched.context.references.slice(0, 10).map(slimSource),
+    explanation: {
+      summary: enriched.explanation.summary,
+      structure: enriched.explanation.howItWorks,
+      confidence: enriched.explanation.confidence,
+      sources: (enriched.explanation.sources ?? []).slice(0, 8).map(slimSource)
+    }
+  };
+}
+
 export async function runExplainSelectionTool(request: ToolRequest): Promise<ToolEnvelope<unknown>> {
   const deterministic = await buildSelectionContext({
     rootPath: request.rootPath,
@@ -49,28 +75,36 @@ export async function runExplainSelectionTool(request: ToolRequest): Promise<Too
     trustProviderConfig: request.trustProviderConfig === true
   });
 
-  return toolSuccess(
-    "explain-selection",
-    {
-      workspace: enriched.workspace,
-      context: enriched.context,
-      explanation: enriched.explanation
-    },
-    {
-      metadata: enriched.metadata,
-      enrichment: enriched.enrichment as ToolEnrichmentMetadata
-    }
-  );
+  return toolSuccess("explain-selection", slimExplainPayload(enriched), {
+    metadata: enriched.metadata,
+    enrichment: enriched.enrichment as ToolEnrichmentMetadata
+  });
 }
 
 export async function runFindDefinitionTool(request: ToolRequest): Promise<ToolEnvelope<unknown>> {
   const items = await findDefinition(request);
-  return toolSuccess("find-definition", { items });
+  return toolSuccess("find-definition", {
+    items: items.slice(0, 8).map((item) => ({
+      file: item.file,
+      line: item.line,
+      kind: item.kind,
+      score: item.score,
+      excerpt: item.excerpt ? item.excerpt.trim().slice(0, 160) : undefined
+    }))
+  });
 }
 
 export async function runFindUsagesTool(request: ToolRequest): Promise<ToolEnvelope<unknown>> {
   const items = await findUsages(request);
-  return toolSuccess("find-usages", { items });
+  return toolSuccess("find-usages", {
+    items: items.slice(0, 12).map((item) => ({
+      file: item.file,
+      line: item.line,
+      kind: item.kind,
+      score: item.score,
+      excerpt: item.excerpt ? item.excerpt.trim().slice(0, 160) : undefined
+    }))
+  });
 }
 
 export async function runLogicalSectionTool(request: ToolRequest): Promise<ToolEnvelope<unknown>> {

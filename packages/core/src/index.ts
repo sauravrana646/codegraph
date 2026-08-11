@@ -493,26 +493,35 @@ function excerptFocusLine(excerpt: string | undefined, symbolHint?: string): str
   return (lines[Math.floor(lines.length / 2)] ?? lines[0] ?? "").trim();
 }
 
+function truncateBlock(text: string, maxChars: number): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= maxChars) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+}
+
+/** Compact symbol structure for tools / enrichment — not a user-facing narrative. */
 function buildAstFactBlock(primary: PythonSymbol | undefined): string {
   if (!primary) {
-    return "AST: no symbol structure resolved.";
+    return "structure: unresolved";
   }
 
   const lines = [
-    `AST symbol: ${primary.name}`,
+    `symbol: ${primary.name}`,
     `kind: ${primary.kind}`,
     `span: ${primary.file}:${primary.line}-${primary.endLine}`,
     `bases: ${primary.bases.join(", ") || "(none)"}`,
     `decorators: ${primary.decorators.join(", ") || "(none)"}`,
-    `docstring: ${primary.docstring || "(none)"}`
+    `docstring: ${truncateBlock(primary.docstring || "(none)", 240)}`
   ];
 
   const fields = fieldMembers(primary);
   if (fields.length > 0) {
     lines.push("fields:");
-    for (const field of fields.slice(0, 20)) {
+    for (const field of fields.slice(0, 16)) {
       lines.push(
-        `- ${field.name}${field.annotation ? `: ${field.annotation}` : ""}${field.value ? ` = ${field.value}` : ""}`
+        `- ${field.name}${field.annotation ? `: ${field.annotation}` : ""}${field.value ? ` = ${truncateBlock(field.value, 80)}` : ""}`
       );
     }
   }
@@ -520,7 +529,7 @@ function buildAstFactBlock(primary: PythonSymbol | undefined): string {
   const validators = validatorMethods(primary);
   if (validators.length > 0) {
     lines.push("validators:");
-    for (const method of validators.slice(0, 12)) {
+    for (const method of validators.slice(0, 10)) {
       lines.push(`- ${formatMethod(method)}`);
     }
   }
@@ -530,13 +539,13 @@ function buildAstFactBlock(primary: PythonSymbol | undefined): string {
   );
   if (methods.length > 0) {
     lines.push("methods:");
-    for (const method of methods.slice(0, 12)) {
+    for (const method of methods.slice(0, 10)) {
       lines.push(`- ${formatMethod(method)}`);
     }
   }
 
   lines.push("definition_excerpt:");
-  lines.push(primary.excerpt);
+  lines.push(truncateBlock(primary.excerpt, 400));
   return lines.join("\n");
 }
 

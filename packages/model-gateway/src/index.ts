@@ -466,43 +466,40 @@ export function applyEnrichmentText(
   };
 }
 
-/** Compact handoff prompt for Cursor/Claude Agent (subscription model, no API key). */
-export function buildAgentHandoffPrompt(result: SelectionContextResultLike): string {
-  return buildSlimAgentHandoffPrompt(result);
+export interface AgentPointerRequest {
+  rootPath: string;
+  filePath: string;
+  line: number;
+  selectedText?: string;
 }
 
+export const SLIM_HANDOFF_MARKER = "codegraph-slim-v2";
+
 /**
- * Token-efficient Agent handoff: send only a pointer + instructions.
+ * Token-efficient Agent handoff from a pointer only (no AST/LSP dump).
  * Agent must pull definitions/usages/structure via Codegraph tools as needed.
  */
-export function buildSlimAgentHandoffPrompt(result: SelectionContextResultLike): string {
-  const target = result.context.target;
-  const symbol = target.selectedText?.trim() || "(cursor only)";
-  const def = result.context.definitions[0];
-  const refCount = result.context.references.length;
-  const rootPath = result.workspace.rootPath || "(current workspace root)";
-
+export function buildPointerAgentHandoffPrompt(request: AgentPointerRequest): string {
+  const symbol = request.selectedText?.trim() || "(cursor only)";
   return [
+    SLIM_HANDOFF_MARKER,
     "Codegraph Live Explain — answer in this Agent chat.",
     "Do not ask for API keys.",
-    "Do NOT wait for large pasted code; fetch what you need with tools.",
+    "Do NOT paste or wait for large code dumps; fetch with tools.",
     "",
     "TARGET:",
-    `rootPath: ${rootPath}`,
-    `filePath: ${target.file}`,
-    `line: ${target.line ?? 1}`,
+    `rootPath: ${request.rootPath}`,
+    `filePath: ${request.filePath}`,
+    `line: ${request.line}`,
     `symbol: ${symbol}`,
-    `resolution: ${result.metadata.source} tier=${result.metadata.capabilityTier}`,
-    def ? `bestDefinitionHint: ${def.file}:${def.line}` : "bestDefinitionHint: (resolve via tools)",
-    `knownReferenceCount: ${refCount}`,
     "",
     "REQUIRED TOOL FLOW (pull data yourself):",
-    "1) Call Codegraph `explain_selection` with enrich omitted/false for this filePath/line/symbol.",
+    "1) Call Codegraph `explain_selection` with enrich omitted/false.",
     "2) If needed, call `find_definition` and/or `find_usages`.",
     "3) Optionally `logical_section` for surrounding class/function.",
     "4) Only after tools return, write the tutoring answer.",
     "",
-    "ANSWER FORMAT (learn-codebase style):",
+    "ANSWER FORMAT:",
     "1) Location + short code citation (from tool sources only)",
     "2) Purpose",
     "3) Fields table (Field | Meaning) when applicable",
@@ -512,6 +509,21 @@ export function buildSlimAgentHandoffPrompt(result: SelectionContextResultLike):
     "",
     "Rules: cite only tool file:line sources; never invent files/symbols; keep it concise."
   ].join("\n");
+}
+
+/** @deprecated Prefer buildPointerAgentHandoffPrompt — ignores AST/LSP payload on purpose. */
+export function buildAgentHandoffPrompt(result: SelectionContextResultLike): string {
+  return buildSlimAgentHandoffPrompt(result);
+}
+
+/** @deprecated Prefer buildPointerAgentHandoffPrompt. */
+export function buildSlimAgentHandoffPrompt(result: SelectionContextResultLike): string {
+  return buildPointerAgentHandoffPrompt({
+    rootPath: result.workspace.rootPath,
+    filePath: result.context.target.file,
+    line: result.context.target.line ?? 1,
+    selectedText: result.context.target.selectedText
+  });
 }
 
 export function buildHostEnrichmentPrompt(result: SelectionContextResultLike): ModelRequest {
