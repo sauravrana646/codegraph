@@ -173,13 +173,14 @@ Enable enrichment with either:
 Provider configuration:
 
 ```bash
+export CODEGRAPH_ENRICH=1
+export CODEGRAPH_PROVIDER=openrouter   # openai | openrouter | groq | together | fireworks | deepseek | mistral | google | custom
 export CODEGRAPH_API_KEY="..."
-# optional:
-export CODEGRAPH_BASE_URL="https://api.openai.com/v1"
-export CODEGRAPH_MODEL="gpt-4o-mini"
+export CODEGRAPH_MODEL="anthropic/claude-3.5-sonnet"
+# CODEGRAPH_BASE_URL only needed when CODEGRAPH_PROVIDER=custom
 ```
 
-`OPENAI_API_KEY` / `OPENAI_BASE_URL` are also accepted as aliases.
+`OPENAI_API_KEY` / `OPENAI_BASE_URL` are also accepted as aliases. Known providers set the base URL automatically.
 
 Example enriched explain request:
 
@@ -322,10 +323,11 @@ codegraph.liveExplain.pythonOnly           # only auto-explain Python (default o
 codegraph.liveExplain.autoSubmitAgent      # auto-send slim prompt to Agent (default on)
 codegraph.modelAccess.useBuiltInAgent      # Agent path (default on)
 codegraph.modelAccess.useApiKeyProvider    # API key path (default off)
-codegraph.modelAccess.autoEnrichOnExplain  # auto handoff after *manual* Explain only (default off)
-codegraph.enrichment.apiKey                # only for API key mode
-codegraph.enrichment.baseUrl
-codegraph.enrichment.model
+codegraph.enrichment.provider              # openrouter | openai | groq | … (auto base URL)
+codegraph.enrichment.apiKey                # provider API key
+codegraph.enrichment.model                 # provider model id
+codegraph.enrichment.baseUrl               # only for Custom provider
+codegraph.enrichment.preferIdeHost         # try vscode.lm first (default off)
 ```
 
 Pick one path: **agent** (subscription) or **API key**. The settings enforce that.

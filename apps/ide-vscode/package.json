@@ -1,7 +1,7 @@
 {
   "name": "codegraph-ide-vscode",
   "displayName": "Codegraph",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "publisher": "codegraph",
   "description": "Python-first codebase intelligence extension for VS Code and Cursor.",
@@ -34,7 +34,8 @@
     "onCommand:codegraph.toggleLiveExplain",
     "onCommand:codegraph.diagnoseLiveExplain",
     "onCommand:codegraph.findDefinition",
-    "onCommand:codegraph.findUsages"
+    "onCommand:codegraph.findUsages",
+    "onCommand:codegraph.configureApiProvider"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -62,6 +63,10 @@
       {
         "command": "codegraph.findUsages",
         "title": "Codegraph: Find Usages"
+      },
+      {
+        "command": "codegraph.configureApiProvider",
+        "title": "Codegraph: Configure API Provider"
       }
     ],
     "configuration": {
@@ -122,23 +127,50 @@
         },
         "codegraph.enrichment.preferIdeHost": {
           "type": "boolean",
-          "default": true,
-          "description": "When API key mode is on, try IDE host language models (vscode.lm) before the API key provider."
+          "default": false,
+          "markdownDescription": "When API key mode is on, try IDE host language models (`vscode.lm`) **before** the configured API provider. Leave off to always use your selected provider (OpenRouter, OpenAI, etc.)."
+        },
+        "codegraph.enrichment.provider": {
+          "type": "string",
+          "default": "openrouter",
+          "enum": [
+            "openai",
+            "openrouter",
+            "groq",
+            "together",
+            "fireworks",
+            "deepseek",
+            "mistral",
+            "google",
+            "custom"
+          ],
+          "enumDescriptions": [
+            "OpenAI — https://api.openai.com/v1",
+            "OpenRouter — Claude, Gemini, OpenAI, and more",
+            "Groq",
+            "Together AI",
+            "Fireworks",
+            "DeepSeek",
+            "Mistral",
+            "Google Gemini (OpenAI-compatible)",
+            "Custom OpenAI-compatible base URL"
+          ],
+          "markdownDescription": "API enrichment provider. Base URL is set automatically (except **Custom**)."
         },
         "codegraph.enrichment.apiKey": {
           "type": "string",
           "default": "",
-          "description": "API key for OpenAI-compatible enrichment provider (only used when Use API Key Provider is enabled)."
-        },
-        "codegraph.enrichment.baseUrl": {
-          "type": "string",
-          "default": "https://api.openai.com/v1",
-          "description": "Base URL for the OpenAI-compatible enrichment provider."
+          "description": "API key for the selected enrichment provider."
         },
         "codegraph.enrichment.model": {
           "type": "string",
-          "default": "gpt-4o-mini",
-          "description": "Model name used for API key enrichment."
+          "default": "openai/gpt-4o-mini",
+          "markdownDescription": "Model id for the selected provider (e.g. `openai/gpt-4o-mini`, `anthropic/claude-3.5-sonnet`, `gemini-2.0-flash`)."
+        },
+        "codegraph.enrichment.baseUrl": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Only needed when provider is **Custom**. Known providers set this automatically."
         }
       }
     }

@@ -9,6 +9,9 @@ import {
   buildPointerAgentHandoffPrompt,
   buildHostEnrichmentPrompt,
   enrichSelectionContext,
+  ENRICHMENT_PROVIDER_PRESETS,
+  getEnrichmentProviderPreset,
+  resolveEnrichmentBaseUrl,
   SLIM_HANDOFF_MARKER,
   type EnrichmentMetadata,
   type EnrichedSelectionContext as GatewayEnrichedSelectionContext
@@ -240,7 +243,7 @@ export function activate(context: vscode.ExtensionContext): void {
     logCodegraph(`extensionVersion=${packageJson.version ?? "unknown"} marker=${SLIM_HANDOFF_MARKER}`);
     logCodegraph(`liveEnabled=${liveExplainEnabled}`);
     logCodegraph(
-      `agent=${access.useBuiltInAgent} apiKey=${access.useApiKeyProvider} autoSubmit=${vscode.workspace
+      `agent=${access.useBuiltInAgent} apiKey=${access.useApiKeyProvider} provider=${access.providerId} model=${access.model} autoSubmit=${vscode.workspace
         .getConfiguration("codegraph.liveExplain")
         .get("autoSubmitAgent")}`
     );
@@ -353,6 +356,31 @@ export function activate(context: vscode.ExtensionContext): void {
     await openFromCandidates(request.rootPath, usages, "usage");
   });
 
+  const configureApiCommand = vscode.commands.registerCommand("codegraph.configureApiProvider", async () => {
+    await configureApiProvider({ enableApiKeyMode: true });
+  });
+
+  const configListener = vscode.workspace.onDidChangeConfiguration(async (event) => {
+    if (!event.affectsConfiguration("codegraph.enrichment.provider")) {
+      return;
+    }
+    const enrichment = vscode.workspace.getConfiguration("codegraph.enrichment");
+    const providerId = String(enrichment.get<string>("provider") ?? "openrouter");
+    const preset = getEnrichmentProviderPreset(providerId);
+    if (preset.id === "custom") {
+      return;
+    }
+    // Keep baseUrl empty for known providers — runtime resolves from preset.
+    if (enrichment.get<string>("baseUrl")) {
+      await enrichment.update("baseUrl", "", vscode.ConfigurationTarget.Workspace);
+    }
+    const currentModel = enrichment.get<string>("model")?.trim();
+    const knownDefaults = new Set(ENRICHMENT_PROVIDER_PRESETS.map((item) => item.defaultModel));
+    if (!currentModel || knownDefaults.has(currentModel)) {
+      await enrichment.update("model", preset.defaultModel, vscode.ConfigurationTarget.Workspace);
+    }
+  });
+
   const selectionListener = vscode.window.onDidChangeTextEditorSelection((event) => {
     if (!liveExplainEnabled) {
       return;
@@ -374,6 +402,8 @@ export function activate(context: vscode.ExtensionContext): void {
     askAgentCommand,
     definitionCommand,
     usagesCommand,
+    configureApiCommand,
+    configListener,
     selectionListener,
     editorListener,
     liveExplainStatusBar,
@@ -450,15 +480,22 @@ function modelAccessConfig(): {
   useApiKeyProvider: boolean;
   autoEnrichOnExplain: boolean;
   preferIdeHost: boolean;
+  providerId: string;
+  providerLabel: string;
   apiKey?: string;
   baseUrl: string;
   model: string;
 } {
   const access = vscode.workspace.getConfiguration("codegraph.modelAccess");
   const enrichment = vscode.workspace.getConfiguration("codegraph.enrichment");
+  const providerId = String(enrichment.get<string>("provider") ?? "openrouter");
+  const preset = getEnrichmentProviderPreset(providerId);
   const apiKey =
-    enrichment.get<string>("apiKey")?.trim() || process.env.OPENAI_API_KEY || process.env.CODEGRAPH_API_KEY;
+    enrichment.get<string>("apiKey")?.trim() ||
+    process.env.CODEGRAPH_API_KEY ||
+    process.env.OPENAI_API_KEY;
   const legacyEnabled = Boolean(enrichment.get<boolean>("enabled"));
+  const customBaseUrl = enrichment.get<string>("baseUrl")?.trim();
 
   let useApiKeyProvider = Boolean(access.get<boolean>("useApiKeyProvider")) || legacyEnabled;
   let useBuiltInAgent = access.get<boolean>("useBuiltInAgent") !== false;
@@ -474,11 +511,97 @@ function modelAccessConfig(): {
     useBuiltInAgent,
     useApiKeyProvider,
     autoEnrichOnExplain: Boolean(access.get<boolean>("autoEnrichOnExplain")),
-    preferIdeHost: enrichment.get<boolean>("preferIdeHost") !== false,
+    preferIdeHost: Boolean(enrichment.get<boolean>("preferIdeHost")),
+    providerId: preset.id,
+    providerLabel: preset.label,
     apiKey: apiKey || undefined,
-    baseUrl: String(enrichment.get<string>("baseUrl") ?? "https://api.openai.com/v1"),
-    model: String(enrichment.get<string>("model") ?? "gpt-4o-mini")
+    baseUrl: resolveEnrichmentBaseUrl(preset.id, customBaseUrl),
+    model: String(enrichment.get<string>("model")?.trim() || preset.defaultModel)
   };
+}
+
+/**
+ * Wizard: pick provider (auto base URL) → API key → model.
+ */
+async function configureApiProvider(options?: { enableApiKeyMode?: boolean }): Promise<boolean> {
+  const enrichment = vscode.workspace.getConfiguration("codegraph.enrichment");
+  const currentId = String(enrichment.get<string>("provider") ?? "openrouter");
+
+  const picked = await vscode.window.showQuickPick(
+    ENRICHMENT_PROVIDER_PRESETS.map((preset) => ({
+      label: preset.label,
+      description: preset.id === "custom" ? "set base URL next" : preset.baseUrl,
+      detail: preset.description,
+      preset
+    })),
+    {
+      title: "Codegraph API provider",
+      placeHolder: "Select a provider (base URL is set automatically)",
+      ignoreFocusOut: true
+    }
+  );
+  if (!picked) {
+    return false;
+  }
+
+  const preset = picked.preset;
+  let customBaseUrl = enrichment.get<string>("baseUrl")?.trim() || "";
+  if (preset.id === "custom") {
+    const entered = await vscode.window.showInputBox({
+      title: "Custom OpenAI-compatible base URL",
+      prompt: "Must expose POST /chat/completions (include /v1 if required)",
+      value: customBaseUrl || "https://api.openai.com/v1",
+      ignoreFocusOut: true
+    });
+    if (!entered?.trim()) {
+      return false;
+    }
+    customBaseUrl = entered.trim().replace(/\/$/, "");
+  }
+
+  const apiKey = await vscode.window.showInputBox({
+    title: `${preset.label} API key`,
+    prompt: "Stored in Codegraph settings (workspace). Only the key and model are required.",
+    password: true,
+    value: enrichment.get<string>("apiKey") ?? "",
+    ignoreFocusOut: true
+  });
+  if (apiKey === undefined) {
+    return false;
+  }
+  if (!apiKey.trim()) {
+    void vscode.window.showWarningMessage("API key is required for API key mode.");
+    return false;
+  }
+
+  const model = await vscode.window.showInputBox({
+    title: `${preset.label} model`,
+    prompt: "Model id for this provider",
+    value: enrichment.get<string>("model")?.trim() || preset.defaultModel,
+    ignoreFocusOut: true
+  });
+  if (!model?.trim()) {
+    return false;
+  }
+
+  const baseUrl = resolveEnrichmentBaseUrl(preset.id, customBaseUrl);
+  await enrichment.update("provider", preset.id, vscode.ConfigurationTarget.Workspace);
+  await enrichment.update("apiKey", apiKey.trim(), vscode.ConfigurationTarget.Workspace);
+  await enrichment.update("model", model.trim(), vscode.ConfigurationTarget.Workspace);
+  await enrichment.update("baseUrl", preset.id === "custom" ? baseUrl : "", vscode.ConfigurationTarget.Workspace);
+  await enrichment.update("preferIdeHost", false, vscode.ConfigurationTarget.Workspace);
+
+  if (options?.enableApiKeyMode !== false) {
+    const access = vscode.workspace.getConfiguration("codegraph.modelAccess");
+    await access.update("useApiKeyProvider", true, vscode.ConfigurationTarget.Workspace);
+    await access.update("useBuiltInAgent", false, vscode.ConfigurationTarget.Workspace);
+    await enrichment.update("enabled", true, vscode.ConfigurationTarget.Workspace);
+  }
+
+  void vscode.window.showInformationMessage(
+    `Codegraph API provider: ${preset.label} · model ${model.trim()} · ${baseUrl}`
+  );
+  return true;
 }
 
 function enrichmentStatusLabel(enrichment?: EnrichmentMetadata): string {
@@ -579,7 +702,7 @@ async function enrichViaApiKey(deterministic: SelectionContext): Promise<Enriche
       ...deterministic,
       enrichment: {
         used: false,
-        error: "API key provider enabled but no API key is configured."
+        error: "API key provider enabled but no API key is configured. Run “Codegraph: Configure API Provider”."
       }
     };
   }
@@ -588,6 +711,7 @@ async function enrichViaApiKey(deterministic: SelectionContext): Promise<Enriche
     enabled: true,
     trustProviderConfig: true,
     provider: {
+      providerId: access.providerId,
       apiKey: access.apiKey,
       baseUrl: access.baseUrl,
       model: access.model
@@ -978,11 +1102,18 @@ async function handlePanelMessage(message: unknown): Promise<void> {
       useBuiltInAgent = true;
     }
 
-    await config.update("useBuiltInAgent", useBuiltInAgent, vscode.ConfigurationTarget.Workspace);
-    await config.update("useApiKeyProvider", useApiKeyProvider, vscode.ConfigurationTarget.Workspace);
-    await vscode.workspace
-      .getConfiguration("codegraph.enrichment")
-      .update("enabled", useApiKeyProvider, vscode.ConfigurationTarget.Workspace);
+    if (useApiKeyProvider) {
+      const configured = await configureApiProvider({ enableApiKeyMode: true });
+      if (!configured) {
+        return;
+      }
+    } else {
+      await config.update("useBuiltInAgent", useBuiltInAgent, vscode.ConfigurationTarget.Workspace);
+      await config.update("useApiKeyProvider", false, vscode.ConfigurationTarget.Workspace);
+      await vscode.workspace
+        .getConfiguration("codegraph.enrichment")
+        .update("enabled", false, vscode.ConfigurationTarget.Workspace);
+    }
 
     if (panel && currentSession && extensionContext) {
       await runExplainSelection(extensionContext, currentSession.request, {

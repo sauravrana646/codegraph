@@ -31,7 +31,9 @@ Turn Live ON once, then **only move your cursor** — no typing, no Enter.
 
 **Agent mode (default):** a slim pointer (`codegraph-slim-v3`) is auto-sent to Cursor Agent chat. Agent reads the source and explains. On macOS, allow **Accessibility** for Cursor the first time (System Settings → Privacy & Security → Accessibility).
 
-**API key mode:** a short source window is enriched in the Codegraph panel (no AST/LSP context packs).
+**API key mode:** pick a provider (OpenRouter, OpenAI, Groq, Gemini, …); base URL is set automatically. You only enter **API key** + **model**. Enrichment shows in the Codegraph panel.
+
+Command: **Codegraph: Configure API Provider**
 
 Settings:
 
@@ -49,12 +51,15 @@ Settings:
 - `Codegraph: Find Definition`
 - `Codegraph: Find Usages`
 
-### Model access checkboxes
+### Model access
 
-In the explanation panel (and in Settings → Codegraph), pick **one**:
+Pick **one**:
 
-- **Built-in Cursor/Claude agent** (default) — subscription model does **enrichment + explanation** when you ask (no API key)
-- **API key provider** — OpenAI-compatible key does **enrichment** in-panel (including during Live Explain)
+- **Built-in Cursor/Claude agent** (default) — subscription model; no API key
+- **API key provider** — run **Codegraph: Configure API Provider**
+  - Dropdown: OpenRouter, OpenAI, Groq, Together, Fireworks, DeepSeek, Mistral, Google Gemini, or Custom
+  - Base URL is set automatically (Custom asks for base URL)
+  - You only enter **API key** + **model**
 
 `autoEnrichOnExplain` (default **off**) only affects **manual** Explain Selection in agent mode. It never fires on Live Explain cursor moves.
 

@@ -1,6 +1,19 @@
 import type { ContextBundle, Explanation, SelectionContextResultLike } from "./types";
+import {
+  getEnrichmentProviderPreset,
+  resolveEnrichmentBaseUrl,
+  type EnrichmentProviderId
+} from "./providers";
 
 export type { SelectionContextResultLike } from "./types";
+export {
+  ENRICHMENT_PROVIDER_PRESETS,
+  defaultModelForProvider,
+  getEnrichmentProviderPreset,
+  resolveEnrichmentBaseUrl,
+  type EnrichmentProviderId,
+  type EnrichmentProviderPreset
+} from "./providers";
 
 export interface ModelCapabilities {
   streaming: boolean;
@@ -29,6 +42,8 @@ export interface ProviderConfig {
   apiKey?: string;
   baseUrl?: string;
   model?: string;
+  /** Named provider preset; drives base URL when not custom. */
+  providerId?: EnrichmentProviderId | string;
 }
 
 export interface EnrichmentOptions {
@@ -66,7 +81,6 @@ interface StructuredEnrichment {
   caveats?: string[];
 }
 
-const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_TIMEOUT_MS = 20_000;
 
 const BLOCKED_HOST_PATTERNS = [
@@ -131,27 +145,46 @@ export function assertSafeProviderBaseUrl(baseUrl: string, options?: { allowLoca
   return parsed.toString().replace(/\/$/, "");
 }
 
-function resolveConfig(options?: EnrichmentOptions): Required<ProviderConfig> & { enabled: boolean; timeoutMs: number } {
+function resolveConfig(options?: EnrichmentOptions): Required<ProviderConfig> & {
+  enabled: boolean;
+  timeoutMs: number;
+  supportsJsonObject: boolean;
+  providerLabel: string;
+} {
   const trustProvider = options?.trustProviderConfig === true;
   const envApiKey = process.env.CODEGRAPH_API_KEY ?? process.env.OPENAI_API_KEY;
-  const envBaseUrl = process.env.CODEGRAPH_BASE_URL ?? process.env.OPENAI_BASE_URL ?? DEFAULT_BASE_URL;
-  const envModel = process.env.CODEGRAPH_MODEL ?? "gpt-4o-mini";
+  const envProviderId = process.env.CODEGRAPH_PROVIDER ?? "openai";
+  const envBaseUrl = process.env.CODEGRAPH_BASE_URL ?? process.env.OPENAI_BASE_URL;
+  const envModel = process.env.CODEGRAPH_MODEL;
 
-  // Never mix a client-supplied baseUrl with env credentials.
+  const providerId = trustProvider
+    ? options?.provider?.providerId ?? envProviderId
+    : envProviderId;
+  const preset = getEnrichmentProviderPreset(providerId);
+
+  // Never mix a client-supplied baseUrl with env credentials unless trusted.
   const apiKey = trustProvider ? options?.provider?.apiKey ?? envApiKey : envApiKey;
-  const rawBaseUrl = trustProvider ? options?.provider?.baseUrl ?? envBaseUrl : envBaseUrl;
-  const model = trustProvider ? options?.provider?.model ?? envModel : options?.provider?.model ?? envModel;
+  const customBaseUrl = trustProvider
+    ? options?.provider?.baseUrl ?? envBaseUrl
+    : envBaseUrl;
+  const baseUrl = resolveEnrichmentBaseUrl(providerId, customBaseUrl);
+  const model =
+    (trustProvider ? options?.provider?.model : undefined) ||
+    envModel ||
+    preset.defaultModel;
 
   const enabledByEnv = process.env.CODEGRAPH_ENRICH === "1" || process.env.CODEGRAPH_ENRICH === "true";
   const enabled = options?.enabled === true || (options?.enabled === undefined && enabledByEnv);
-  const baseUrl = assertSafeProviderBaseUrl(rawBaseUrl, { allowLocal: trustProvider });
 
   return {
     enabled: Boolean(enabled && apiKey),
     apiKey: apiKey ?? "",
-    baseUrl,
+    baseUrl: assertSafeProviderBaseUrl(baseUrl, { allowLocal: trustProvider }),
     model,
-    timeoutMs: options?.timeoutMs ?? DEFAULT_TIMEOUT_MS
+    providerId: preset.id,
+    timeoutMs: options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    supportsJsonObject: preset.supportsJsonObject,
+    providerLabel: preset.id
   };
 }
 
@@ -160,21 +193,30 @@ export class OpenAICompatibleProvider implements ModelProvider {
   private readonly baseUrl: string;
   private readonly modelName: string;
   private readonly timeoutMs: number;
+  private readonly supportsJsonObject: boolean;
+  private readonly providerLabel: string;
+  private readonly extraHeaders: Record<string, string>;
 
   constructor(
     config: Required<Pick<ProviderConfig, "apiKey" | "baseUrl" | "model">> & {
       timeoutMs?: number;
       allowLocal?: boolean;
+      supportsJsonObject?: boolean;
+      providerLabel?: string;
+      extraHeaders?: Record<string, string>;
     }
   ) {
     this.apiKey = config.apiKey;
     this.baseUrl = assertSafeProviderBaseUrl(config.baseUrl, { allowLocal: config.allowLocal });
     this.modelName = config.model;
     this.timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.supportsJsonObject = config.supportsJsonObject !== false;
+    this.providerLabel = config.providerLabel ?? "openai-compatible";
+    this.extraHeaders = config.extraHeaders ?? {};
   }
 
   id(): string {
-    return "openai-compatible";
+    return this.providerLabel;
   }
 
   model(): string {
@@ -184,7 +226,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
   capabilities(): ModelCapabilities {
     return {
       streaming: false,
-      structuredJson: true
+      structuredJson: this.supportsJsonObject
     };
   }
 
@@ -192,24 +234,42 @@ export class OpenAICompatibleProvider implements ModelProvider {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
 
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      authorization: `Bearer ${this.apiKey}`,
+      ...this.extraHeaders
+    };
+
+    const body: Record<string, unknown> = {
+      model: this.modelName,
+      temperature: 0.2,
+      messages: [
+        { role: "system", content: request.system },
+        { role: "user", content: request.user }
+      ]
+    };
+    if (this.supportsJsonObject) {
+      body.response_format = { type: "json_object" };
+    }
+
     try {
-      const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      let response = await fetch(`${this.baseUrl}/chat/completions`, {
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${this.apiKey}`
-        },
-        body: JSON.stringify({
-          model: this.modelName,
-          temperature: 0.2,
-          response_format: { type: "json_object" },
-          messages: [
-            { role: "system", content: request.system },
-            { role: "user", content: request.user }
-          ]
-        }),
+        headers,
+        body: JSON.stringify(body),
         signal: controller.signal
       });
+
+      // Some OpenAI-compatible hosts reject response_format — retry once without it.
+      if (!response.ok && this.supportsJsonObject && (response.status === 400 || response.status === 422)) {
+        delete body.response_format;
+        response = await fetch(`${this.baseUrl}/chat/completions`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          signal: controller.signal
+        });
+      }
 
       if (!response.ok) {
         throw new Error(`Provider request failed (${response.status})`);
@@ -314,8 +374,21 @@ function buildEnrichmentPrompt(context: ContextBundle, explanation: Explanation)
   };
 }
 
+function extractJsonObject(text: string): string {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenced?.[1]) {
+    return fenced[1].trim();
+  }
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    return text.slice(start, end + 1);
+  }
+  return text.trim();
+}
+
 function parseEnrichment(text: string): StructuredEnrichment {
-  const parsed = JSON.parse(text) as StructuredEnrichment;
+  const parsed = JSON.parse(extractJsonObject(text)) as StructuredEnrichment;
 
   return {
     summary: typeof parsed.summary === "string" ? parsed.summary : undefined,
@@ -415,7 +488,16 @@ export async function enrichSelectionContext(
       baseUrl: config.baseUrl,
       model: config.model,
       timeoutMs: config.timeoutMs,
-      allowLocal: options?.trustProviderConfig === true
+      allowLocal: options?.trustProviderConfig === true,
+      supportsJsonObject: config.supportsJsonObject,
+      providerLabel: config.providerLabel,
+      extraHeaders:
+        config.providerLabel === "openrouter"
+          ? {
+              "HTTP-Referer": "https://github.com/sauravrana646/codegraph",
+              "X-Title": "Codegraph"
+            }
+          : undefined
     });
     const response = await provider.generate(buildEnrichmentPrompt(result.context, result.explanation));
     const enrichment = parseEnrichment(response.text);
@@ -434,7 +516,7 @@ export async function enrichSelectionContext(
       ...result,
       enrichment: {
         used: false,
-        provider: "openai-compatible",
+        provider: config.providerLabel,
         model: config.model,
         error: sanitizeEnrichmentError(error)
       }

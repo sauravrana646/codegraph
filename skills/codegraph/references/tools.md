@@ -61,19 +61,19 @@ Error:
 
 ### `explain_selection`
 
-Returns workspace summary, context (definitions/references/related), and structured explanation.
+Returns a bounded source window for the target (`section` excerpt) — not an AST/LSP dump.
 
-Use for: “what does this do?”, onboarding to a symbol, citation-backed answers.
+Use for: “what does this do?”, onboarding to a symbol, citation-backed answers after you read the window.
 
 ### `find_definition`
 
-Returns `{ items: SourceReference[] }` ranked definitions.
+Returns `{ items: [{ file, line, kind, score }] }` ranked definition locations.
 
-Kinds include `definition`. Prefer the top-scoring item unless conflicts are obvious.
+Prefer the top-scoring item unless conflicts are obvious.
 
 ### `find_usages`
 
-Returns `{ items: SourceReference[] }` ranked usages.
+Returns `{ items: [{ file, line, kind, score }] }` ranked usage locations.
 
 Kinds: `call`, `attribute`, `import`, `mention`. Definition lines are filtered out.
 
