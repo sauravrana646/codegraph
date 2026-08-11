@@ -7,6 +7,18 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 
 export type PythonAstSymbolKind = "function" | "class";
+export type PythonAstMemberKind = "field" | "method";
+
+export interface PythonAstMember {
+  kind: PythonAstMemberKind;
+  name: string;
+  line: number;
+  endLine?: number;
+  annotation?: string | null;
+  value?: string | null;
+  decorators?: string[];
+  docstring?: string | null;
+}
 
 export interface PythonAstSymbol {
   name: string;
@@ -14,6 +26,10 @@ export interface PythonAstSymbol {
   line: number;
   endLine: number;
   indent: number;
+  bases?: string[];
+  decorators?: string[];
+  docstring?: string | null;
+  members?: PythonAstMember[];
 }
 
 export interface PythonAstParseResult {
@@ -62,7 +78,11 @@ function regexFallback(content: string): PythonAstParseResult {
       kind: match[2] === "class" ? "class" : "function",
       line: index + 1,
       endLine: lines.length,
-      indent: (match[1] ?? "").length
+      indent: (match[1] ?? "").length,
+      bases: [],
+      decorators: [],
+      docstring: null,
+      members: []
     });
   });
 

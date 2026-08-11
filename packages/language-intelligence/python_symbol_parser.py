@@ -4,6 +4,76 @@ import pathlib
 import sys
 
 
+def _unparse(node: ast.AST | None) -> str | None:
+    if node is None:
+        return None
+    try:
+        return ast.unparse(node)
+    except Exception:
+        return None
+
+
+def _decorator_names(node: ast.AST) -> list[str]:
+    decorators = getattr(node, "decorator_list", []) or []
+    names: list[str] = []
+    for decorator in decorators:
+        text = _unparse(decorator)
+        if text:
+            names.append(text)
+    return names
+
+
+def _class_members(node: ast.ClassDef) -> list[dict]:
+    members: list[dict] = []
+
+    for item in node.body:
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            members.append(
+                {
+                    "kind": "method",
+                    "name": item.name,
+                    "line": item.lineno,
+                    "endLine": getattr(item, "end_lineno", item.lineno),
+                    "decorators": _decorator_names(item),
+                    "docstring": ast.get_docstring(item),
+                }
+            )
+            continue
+
+        if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+            members.append(
+                {
+                    "kind": "field",
+                    "name": item.target.id,
+                    "line": item.lineno,
+                    "endLine": getattr(item, "end_lineno", item.lineno),
+                    "annotation": _unparse(item.annotation),
+                    "value": _unparse(item.value),
+                    "decorators": [],
+                    "docstring": None,
+                }
+            )
+            continue
+
+        if isinstance(item, ast.Assign):
+            for target in item.targets:
+                if isinstance(target, ast.Name):
+                    members.append(
+                        {
+                            "kind": "field",
+                            "name": target.id,
+                            "line": item.lineno,
+                            "endLine": getattr(item, "end_lineno", item.lineno),
+                            "annotation": None,
+                            "value": _unparse(item.value),
+                            "decorators": [],
+                            "docstring": None,
+                        }
+                    )
+
+    return members
+
+
 def parse_file(file_path: str) -> dict:
     path = pathlib.Path(file_path)
     source = path.read_text(encoding="utf-8")
@@ -20,6 +90,10 @@ def parse_file(file_path: str) -> dict:
                     "line": node.lineno,
                     "endLine": getattr(node, "end_lineno", node.lineno),
                     "indent": node.col_offset,
+                    "bases": [],
+                    "decorators": _decorator_names(node),
+                    "docstring": ast.get_docstring(node),
+                    "members": [],
                 }
             )
             self.generic_visit(node)
@@ -32,6 +106,10 @@ def parse_file(file_path: str) -> dict:
                     "line": node.lineno,
                     "endLine": getattr(node, "end_lineno", node.lineno),
                     "indent": node.col_offset,
+                    "bases": [],
+                    "decorators": _decorator_names(node),
+                    "docstring": ast.get_docstring(node),
+                    "members": [],
                 }
             )
             self.generic_visit(node)
@@ -44,6 +122,10 @@ def parse_file(file_path: str) -> dict:
                     "line": node.lineno,
                     "endLine": getattr(node, "end_lineno", node.lineno),
                     "indent": node.col_offset,
+                    "bases": [text for base in node.bases if (text := _unparse(base))],
+                    "decorators": _decorator_names(node),
+                    "docstring": ast.get_docstring(node),
+                    "members": _class_members(node),
                 }
             )
             self.generic_visit(node)

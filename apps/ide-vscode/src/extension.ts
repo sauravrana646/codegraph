@@ -370,6 +370,14 @@ function enrichmentStatusLabel(enrichment?: EnrichmentMetadata): string {
         : "ok";
   }
 
+  if (
+    enrichment.error?.includes("Live Explain") ||
+    enrichment.error?.includes("deterministic facts") ||
+    enrichment.error?.includes("on-demand")
+  ) {
+    return "deterministic";
+  }
+
   if (enrichment.error?.includes("handed off") || enrichment.error?.includes("agent")) {
     return "agent_enrichment";
   }
