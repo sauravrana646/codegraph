@@ -110,6 +110,11 @@ export type ToolName =
   | "find-definition"
   | "find-usages"
   | "logical-section"
+  | "search-codebase"
+  | "get-symbol-context"
+  | "get-project-overview"
+  | "trace-call-chain"
+  | "ensure-index"
   | "sessions.explain-selection"
   | "sessions.followup"
   | "health";

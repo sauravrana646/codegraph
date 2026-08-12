@@ -83,6 +83,26 @@ Returns `{ section: { file, symbolName?, kind, depth, startLine, endLine, excerp
 
 Use `depth: function` or `class` when you need a bounded excerpt for editing/review.
 
+### `get_symbol_context`
+
+Returns `{ symbol, definitions, references, relatedFiles, callers }` as `file:line` facts from the local index (import-scoped).
+
+### `trace_call_chain`
+
+Returns `{ symbol, hops: [{ file, line, kind, excerpt }] }` one-hop call sites.
+
+### `get_project_overview`
+
+Returns indexed package/entrypoint/symbol summary. Args: `{ rootPath }`.
+
+### `search_codebase`
+
+Returns `{ query, items: [{ file, line, name, kind, score }] }`. Args: `{ rootPath, query }`.
+
+### `ensure_index`
+
+Incrementally builds `~/.cursor/codegraph/indexes/<workspaceId>/index.json`. Args: `{ rootPath, force? }`.
+
 ## HTTP endpoints
 
 Base: `http://127.0.0.1:4311`
@@ -92,6 +112,11 @@ Base: `http://127.0.0.1:4311`
 - `POST /v1/tools/find-definition`
 - `POST /v1/tools/find-usages`
 - `POST /v1/tools/logical-section`
+- `POST /v1/tools/search-codebase`
+- `POST /v1/tools/get-symbol-context`
+- `POST /v1/tools/get-project-overview`
+- `POST /v1/tools/trace-call-chain`
+- `POST /v1/tools/ensure-index`
 - `POST /v1/sessions/explain-selection`
 - `POST /v1/sessions/followup`
 

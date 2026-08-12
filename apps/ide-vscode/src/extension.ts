@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { buildRepoBrief, buildSelectionContext } from "@codegraph/core";
+import { buildRepoBrief, buildSelectionContext, ensureWorkspaceIndex, reindexPaths } from "@codegraph/core";
 import {
   applyEnrichmentText,
   buildPointerAgentHandoffPrompt,
@@ -302,6 +302,7 @@ export function activate(context: vscode.ExtensionContext): void {
     : monorepoParser;
 
   logCodegraph(`Activated. parser=${process.env.CODEGRAPH_PYTHON_PARSER}`, true);
+  void warmWorkspaceIndex();
 
   // Left + high priority so Cursor's crowded right status bar cannot hide these.
   liveExplainStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 1000);
@@ -352,6 +353,17 @@ export function activate(context: vscode.ExtensionContext): void {
     );
     logCodegraph(`workspaceRequest=${request ? `${request.filePath}:${request.line}` : "(none)"}`);
     logCodegraph(`parser=${process.env.CODEGRAPH_PYTHON_PARSER ?? "(unset)"}`);
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (folder) {
+      try {
+        const result = await ensureWorkspaceIndex(folder.uri.fsPath);
+        logCodegraph(
+          `index files=${result.total} changed=${result.changed} unchanged=${result.unchanged} path=${result.storagePath}`
+        );
+      } catch (error) {
+        logCodegraph(`index error=${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     logCodegraph(`bridgeEnabled exists=${fs.existsSync(enabledPath)}`);
 
     if (request) {
@@ -459,6 +471,43 @@ export function activate(context: vscode.ExtensionContext): void {
     void vscode.window.showInformationMessage(`Explain depth: ${picked.label}`);
   });
 
+  const rebuildIndexCommand = vscode.commands.registerCommand("codegraph.rebuildIndex", async () => {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) {
+      void vscode.window.showWarningMessage("Open a workspace folder to rebuild the Codegraph index.");
+      return;
+    }
+    logCodegraph("Rebuilding local Python index…", true);
+    try {
+      const result = await ensureWorkspaceIndex(folder.uri.fsPath, { force: true });
+      logCodegraph(
+        `Index rebuilt: files=${result.total} changed=${result.changed} removed=${result.removed} path=${result.storagePath}`,
+        true
+      );
+      void vscode.window.showInformationMessage(
+        `Codegraph indexed ${result.total} Python files (${result.changed} parsed).`
+      );
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      logCodegraph(`Index rebuild failed: ${detail}`, true);
+      void vscode.window.showErrorMessage(`Codegraph index failed: ${detail}`);
+    }
+  });
+
+  const saveListener = vscode.workspace.onDidSaveTextDocument((document) => {
+    if (document.languageId !== "python") {
+      return;
+    }
+    const folder = vscode.workspace.getWorkspaceFolder(document.uri);
+    if (!folder) {
+      return;
+    }
+    const relative = vscode.workspace.asRelativePath(document.uri, false);
+    void reindexPaths(folder.uri.fsPath, [relative]).then((result: { total: number }) => {
+      logCodegraph(`Index updated ${relative} (files=${result.total})`);
+    });
+  });
+
   const configListener = vscode.workspace.onDidChangeConfiguration(async (event) => {
     if (event.affectsConfiguration("codegraph.explain.depth")) {
       updateExplainDepthStatusBar();
@@ -506,9 +555,11 @@ export function activate(context: vscode.ExtensionContext): void {
     testApiCommand,
     repoBriefCommand,
     setDepthCommand,
+    rebuildIndexCommand,
     configListener,
     selectionListener,
     editorListener,
+    saveListener,
     getOutputChannel(),
     {
       dispose: () => {
@@ -541,6 +592,21 @@ export function deactivate(): void {
   explainDepthStatusBar?.dispose();
   explainDepthStatusBar = undefined;
   extensionContext = undefined;
+}
+
+async function warmWorkspaceIndex(): Promise<void> {
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (!folder) {
+    return;
+  }
+  try {
+    const result = await ensureWorkspaceIndex(folder.uri.fsPath);
+    logCodegraph(
+      `Local index ready: ${result.total} Python files (${result.changed} parsed, ${result.unchanged} cached)`
+    );
+  } catch (error) {
+    logCodegraph(`Local index skipped: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 function getActiveRequest(options?: { quiet?: boolean }):

@@ -1,4 +1,14 @@
-import { findDefinition, findUsages, getLogicalSection } from "@codegraph/core";
+import {
+  buildProjectOverview,
+  buildSymbolContext,
+  ensureWorkspaceIndex,
+  findDefinition,
+  findUsages,
+  getLogicalSection,
+  getOrBuildIndex,
+  searchIndexedSymbols,
+  traceCallChain
+} from "@codegraph/core";
 import {
   toolSuccess,
   type LogicalSectionDepth,
@@ -13,6 +23,8 @@ export interface ToolRequest {
   selectedText?: string;
   depth?: LogicalSectionDepth;
   enrich?: boolean;
+  query?: string;
+  force?: boolean;
   /**
    * Provider overrides are only honored when trustProviderConfig is true
    * (trusted local callers such as the IDE extension). HTTP/MCP ignore these.
@@ -25,9 +37,20 @@ export interface ToolRequest {
   trustProviderConfig?: boolean;
 }
 
+export type NamedToolAction =
+  | "explain-selection"
+  | "find-definition"
+  | "find-usages"
+  | "logical-section"
+  | "search-codebase"
+  | "get-symbol-context"
+  | "get-project-overview"
+  | "trace-call-chain"
+  | "ensure-index";
+
 function logicalSectionMetadata(confidence: number): ResolutionMetadata {
   return {
-    source: "text",
+    source: "ast",
     capabilityTier: confidence >= 0.7 ? 2 : 1,
     confidence
   };
@@ -42,6 +65,16 @@ function truncateExcerpt(excerpt: string | undefined, maxChars: number): string 
     return trimmed;
   }
   return `${trimmed.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+}
+
+function compactRef(item: { file: string; line: number; kind?: string; score?: number; excerpt?: string }) {
+  return {
+    file: item.file,
+    line: item.line,
+    kind: item.kind,
+    score: item.score,
+    excerpt: truncateExcerpt(item.excerpt, 160)
+  };
 }
 
 /**
@@ -81,24 +114,14 @@ export async function runExplainSelectionTool(request: ToolRequest): Promise<Too
 export async function runFindDefinitionTool(request: ToolRequest): Promise<ToolEnvelope<unknown>> {
   const items = await findDefinition(request);
   return toolSuccess("find-definition", {
-    items: items.slice(0, 8).map((item) => ({
-      file: item.file,
-      line: item.line,
-      kind: item.kind,
-      score: item.score
-    }))
+    items: items.slice(0, 8).map((item) => compactRef(item))
   });
 }
 
 export async function runFindUsagesTool(request: ToolRequest): Promise<ToolEnvelope<unknown>> {
   const items = await findUsages(request);
   return toolSuccess("find-usages", {
-    items: items.slice(0, 12).map((item) => ({
-      file: item.file,
-      line: item.line,
-      kind: item.kind,
-      score: item.score
-    }))
+    items: items.slice(0, 12).map((item) => compactRef(item))
   });
 }
 
@@ -116,21 +139,78 @@ export async function runLogicalSectionTool(request: ToolRequest): Promise<ToolE
   );
 }
 
+export async function runSearchCodebaseTool(request: ToolRequest): Promise<ToolEnvelope<unknown>> {
+  const query = request.query?.trim() || request.selectedText?.trim() || "";
+  const { index } = await getOrBuildIndex(request.rootPath);
+  const items = searchIndexedSymbols(index, query);
+  return toolSuccess("search-codebase", { query, items });
+}
+
+export async function runGetSymbolContextTool(request: ToolRequest): Promise<ToolEnvelope<unknown>> {
+  const symbol = request.selectedText?.trim() || "";
+  const context = await buildSymbolContext({
+    rootPath: request.rootPath,
+    filePath: request.filePath,
+    line: request.line,
+    symbolName: symbol || "(unknown)"
+  });
+  return toolSuccess("get-symbol-context", {
+    symbol: context.symbol,
+    definitions: context.definitions.slice(0, 6).map((item) => compactRef(item)),
+    references: context.references.slice(0, 10).map((item) => compactRef(item)),
+    relatedFiles: context.relatedFiles.slice(0, 8).map((item) => compactRef(item)),
+    callers: context.callers.slice(0, 8).map((item) => compactRef(item))
+  });
+}
+
+export async function runGetProjectOverviewTool(request: ToolRequest): Promise<ToolEnvelope<unknown>> {
+  const { index } = await getOrBuildIndex(request.rootPath);
+  return toolSuccess("get-project-overview", buildProjectOverview(index));
+}
+
+export async function runTraceCallChainTool(request: ToolRequest): Promise<ToolEnvelope<unknown>> {
+  const symbol = request.selectedText?.trim() || "";
+  const hops = await traceCallChain({
+    rootPath: request.rootPath,
+    filePath: request.filePath,
+    symbolName: symbol
+  });
+  return toolSuccess("trace-call-chain", { symbol, hops });
+}
+
+export async function runEnsureIndexTool(request: ToolRequest): Promise<ToolEnvelope<unknown>> {
+  const result = await ensureWorkspaceIndex(request.rootPath, { force: Boolean(request.force) });
+  return toolSuccess("ensure-index", {
+    total: result.total,
+    changed: result.changed,
+    removed: result.removed,
+    unchanged: result.unchanged,
+    updatedAt: result.index.updatedAt
+  });
+}
+
 export async function runNamedTool(
-  action: "explain-selection" | "find-definition" | "find-usages" | "logical-section",
+  action: NamedToolAction,
   request: ToolRequest
 ): Promise<ToolEnvelope<unknown>> {
-  if (action === "explain-selection") {
-    return runExplainSelectionTool(request);
+  switch (action) {
+    case "explain-selection":
+      return runExplainSelectionTool(request);
+    case "find-definition":
+      return runFindDefinitionTool(request);
+    case "find-usages":
+      return runFindUsagesTool(request);
+    case "search-codebase":
+      return runSearchCodebaseTool(request);
+    case "get-symbol-context":
+      return runGetSymbolContextTool(request);
+    case "get-project-overview":
+      return runGetProjectOverviewTool(request);
+    case "trace-call-chain":
+      return runTraceCallChainTool(request);
+    case "ensure-index":
+      return runEnsureIndexTool(request);
+    default:
+      return runLogicalSectionTool(request);
   }
-
-  if (action === "find-definition") {
-    return runFindDefinitionTool(request);
-  }
-
-  if (action === "find-usages") {
-    return runFindUsagesTool(request);
-  }
-
-  return runLogicalSectionTool(request);
 }

@@ -61,6 +61,7 @@ Settings:
 - `Codegraph: Test API Connection`
 - `Codegraph: Repo Brief` — first-look map of the Python workspace
 - `Codegraph: Set Explain Depth` — short / standard / deep
+- `Codegraph: Rebuild Local Index` — incremental Python symbol/import index used by Agent tools
 
 ### Model access
 

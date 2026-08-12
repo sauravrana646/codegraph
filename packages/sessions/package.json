@@ -1,5 +1,5 @@
 {
-  "name": "@codegraph/core",
+  "name": "@codegraph/sessions",
   "version": "0.1.0",
   "private": true,
   "main": "dist/index.js",
@@ -10,11 +10,6 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@codegraph/indexer": "0.1.0",
-    "@codegraph/language-intelligence": "0.1.0",
-    "@codegraph/protocol": "0.1.0",
-    "@codegraph/security": "0.1.0",
-    "@codegraph/sessions": "0.1.0",
     "@codegraph/workspace": "0.1.0"
   }
 }

@@ -6,11 +6,6 @@
     "outDir": "dist"
   },
   "references": [
-    { "path": "../indexer" },
-    { "path": "../language-intelligence" },
-    { "path": "../protocol" },
-    { "path": "../security" },
-    { "path": "../sessions" },
     { "path": "../workspace" }
   ],
   "include": ["src/**/*"]

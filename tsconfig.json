@@ -5,6 +5,8 @@
     { "path": "./packages/workspace" },
     { "path": "./packages/security" },
     { "path": "./packages/language-intelligence" },
+    { "path": "./packages/indexer" },
+    { "path": "./packages/sessions" },
     { "path": "./packages/core" },
     { "path": "./packages/model-gateway" },
     { "path": "./packages/agent-tools" },

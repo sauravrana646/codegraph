@@ -1,7 +1,7 @@
 {
   "name": "codegraph-ide-vscode",
   "displayName": "Codegraph",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "private": true,
   "publisher": "codegraph",
   "description": "Python-first codebase intelligence extension for VS Code and Cursor.",
@@ -37,7 +37,8 @@
     "onCommand:codegraph.configureApiProvider",
     "onCommand:codegraph.testApiConnection",
     "onCommand:codegraph.repoBrief",
-    "onCommand:codegraph.setExplainDepth"
+    "onCommand:codegraph.setExplainDepth",
+    "onCommand:codegraph.rebuildIndex"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -73,6 +74,10 @@
       {
         "command": "codegraph.setExplainDepth",
         "title": "Codegraph: Set Explain Depth"
+      },
+      {
+        "command": "codegraph.rebuildIndex",
+        "title": "Codegraph: Rebuild Local Index"
       }
     ],
     "configuration": {

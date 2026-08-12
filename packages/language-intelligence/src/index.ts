@@ -32,13 +32,23 @@ export interface PythonAstSymbol {
   members?: PythonAstMember[];
 }
 
+export interface PythonAstImport {
+  kind: "import" | "from";
+  module: string;
+  names: string[];
+  alias?: string | null;
+  line: number;
+}
+
 export interface PythonAstParseResult {
   symbols: PythonAstSymbol[];
+  imports: PythonAstImport[];
   source: "python_ast" | "regex_fallback";
 }
 
 interface PythonParserJson {
   symbols?: PythonAstSymbol[];
+  imports?: PythonAstImport[];
 }
 
 function resolveParserScriptPath(): string {
@@ -109,8 +119,47 @@ function regexFallback(content: string): PythonAstParseResult {
 
   return {
     symbols,
+    imports: regexImports(content),
     source: "regex_fallback"
   };
+}
+
+function regexImports(content: string): PythonAstImport[] {
+  const imports: PythonAstImport[] = [];
+  const lines = content.split(/\r?\n/);
+  lines.forEach((line, index) => {
+    const fromMatch = line.match(/^\s*from\s+(\S+)\s+import\s+(.+)$/);
+    if (fromMatch?.[1] && fromMatch[2]) {
+      const names = fromMatch[2]
+        .split(",")
+        .map((part) => part.trim().split(/\s+as\s+/)[0]?.trim())
+        .filter((name): name is string => Boolean(name) && name !== "(");
+      imports.push({
+        kind: "from",
+        module: fromMatch[1],
+        names: names.length ? names : ["*"],
+        line: index + 1
+      });
+      return;
+    }
+    const importMatch = line.match(/^\s*import\s+(.+)$/);
+    if (importMatch?.[1]) {
+      for (const part of importMatch[1].split(",")) {
+        const [module, alias] = part.trim().split(/\s+as\s+/);
+        if (!module) {
+          continue;
+        }
+        imports.push({
+          kind: "import",
+          module,
+          names: [alias?.trim() || module.split(".").pop() || module],
+          alias: alias?.trim() ?? null,
+          line: index + 1
+        });
+      }
+    }
+  });
+  return imports;
 }
 
 export async function parsePythonFile(filePath: string, content?: string): Promise<PythonAstParseResult> {
@@ -124,6 +173,7 @@ export async function parsePythonFile(filePath: string, content?: string): Promi
 
     return {
       symbols: parsed.symbols ?? [],
+      imports: parsed.imports ?? [],
       source: "python_ast"
     };
   } catch {

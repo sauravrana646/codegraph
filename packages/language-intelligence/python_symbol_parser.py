@@ -74,6 +74,35 @@ def _class_members(node: ast.ClassDef) -> list[dict]:
     return members
 
 
+def _imports(tree: ast.AST) -> list[dict]:
+    imports: list[dict] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imports.append(
+                    {
+                        "kind": "import",
+                        "module": alias.name,
+                        "names": [alias.asname or alias.name.split(".")[-1]],
+                        "alias": alias.asname,
+                        "line": node.lineno,
+                    }
+                )
+            continue
+        if isinstance(node, ast.ImportFrom):
+            module = ("." * (node.level or 0)) + (node.module or "")
+            imports.append(
+                {
+                    "kind": "from",
+                    "module": module,
+                    "names": [alias.name for alias in node.names],
+                    "alias": None,
+                    "line": node.lineno,
+                }
+            )
+    return imports
+
+
 def parse_file(file_path: str) -> dict:
     path = pathlib.Path(file_path)
     source = path.read_text(encoding="utf-8")
@@ -131,7 +160,7 @@ def parse_file(file_path: str) -> dict:
             self.generic_visit(node)
 
     Visitor().visit(tree)
-    return {"symbols": symbols}
+    return {"symbols": symbols, "imports": _imports(tree)}
 
 
 def main() -> None:

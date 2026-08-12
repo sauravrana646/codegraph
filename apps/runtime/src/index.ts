@@ -4,18 +4,24 @@ import http from "node:http";
 import path from "node:path";
 
 import {
+  runEnsureIndexTool,
   runExplainSelectionTool,
   runFindDefinitionTool,
   runFindUsagesTool,
+  runGetProjectOverviewTool,
+  runGetSymbolContextTool,
   runLogicalSectionTool,
   runNamedTool,
+  runSearchCodebaseTool,
+  runTraceCallChainTool,
+  type NamedToolAction,
   type ToolRequest
 } from "@codegraph/agent-tools";
 import { toolError, type LogicalSectionDepth, type ToolEnvelope, type ToolName } from "@codegraph/protocol";
 
 interface RuntimeRequestBody extends ToolRequest {}
 
-type SessionAction = "explain-selection" | "find-definition" | "find-usages" | "logical-section";
+type SessionAction = NamedToolAction;
 
 interface SessionFollowupBody {
   sessionId: string;
@@ -71,6 +77,8 @@ function isRuntimeRequestBody(value: unknown): value is RuntimeRequestBody {
     Number.isInteger(candidate.line) &&
     (candidate.line as number) >= 1 &&
     (candidate.selectedText === undefined || typeof candidate.selectedText === "string") &&
+    (candidate.query === undefined || typeof candidate.query === "string") &&
+    (candidate.force === undefined || typeof candidate.force === "boolean") &&
     (candidate.depth === undefined || isLogicalSectionDepth(candidate.depth)) &&
     (candidate.enrich === undefined || typeof candidate.enrich === "boolean") &&
     (candidate.provider === undefined || isProviderObject(candidate.provider)) &&
@@ -90,7 +98,12 @@ function isSessionFollowupBody(value: unknown): value is SessionFollowupBody {
     (candidate.action === "explain-selection" ||
       candidate.action === "find-definition" ||
       candidate.action === "find-usages" ||
-      candidate.action === "logical-section") &&
+      candidate.action === "logical-section" ||
+      candidate.action === "search-codebase" ||
+      candidate.action === "get-symbol-context" ||
+      candidate.action === "get-project-overview" ||
+      candidate.action === "trace-call-chain" ||
+      candidate.action === "ensure-index") &&
     (candidate.requestOverrides === undefined || typeof candidate.requestOverrides === "object")
   );
 }
@@ -162,6 +175,8 @@ function sanitizeRemoteRequest(request: RuntimeRequestBody): RuntimeRequestBody 
     selectedText: request.selectedText,
     depth: request.depth,
     enrich: request.enrich,
+    query: request.query,
+    force: request.force,
     // Never honor client-supplied provider credentials/baseUrl over HTTP.
     provider: undefined,
     trustProviderConfig: false
@@ -235,6 +250,8 @@ function mergeRequest(
     selectedText: overrides?.selectedText ?? baseRequest.selectedText,
     depth: overrides?.depth ?? baseRequest.depth,
     enrich: overrides?.enrich ?? baseRequest.enrich,
+    query: overrides?.query ?? baseRequest.query,
+    force: overrides?.force ?? baseRequest.force,
     provider: undefined,
     trustProviderConfig: false
   };
@@ -401,6 +418,31 @@ async function handleToolRequest(
 
     if (request.url === "/v1/tools/logical-section") {
       writeJson(response, 200, await runLogicalSectionTool(sanitized));
+      return;
+    }
+
+    if (request.url === "/v1/tools/search-codebase") {
+      writeJson(response, 200, await runSearchCodebaseTool(sanitized));
+      return;
+    }
+
+    if (request.url === "/v1/tools/get-symbol-context") {
+      writeJson(response, 200, await runGetSymbolContextTool(sanitized));
+      return;
+    }
+
+    if (request.url === "/v1/tools/get-project-overview") {
+      writeJson(response, 200, await runGetProjectOverviewTool(sanitized));
+      return;
+    }
+
+    if (request.url === "/v1/tools/trace-call-chain") {
+      writeJson(response, 200, await runTraceCallChainTool(sanitized));
+      return;
+    }
+
+    if (request.url === "/v1/tools/ensure-index") {
+      writeJson(response, 200, await runEnsureIndexTool(sanitized));
       return;
     }
 

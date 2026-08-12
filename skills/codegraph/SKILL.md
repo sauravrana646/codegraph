@@ -5,7 +5,7 @@ license: MIT
 compatibility: Requires Node.js 20+ and a local Codegraph install (MCP preferred, CLI/HTTP fallback). Python-first; works best on .py codebases. No external model API key required when running inside Cursor Agent.
 metadata:
   author: codegraph
-  version: "0.1.5"
+  version: "0.1.6"
   homepage: https://github.com/sauravrana646/codegraph
 ---
 
@@ -107,7 +107,7 @@ Do **not** use Codegraph for arbitrary command execution, installing dependencie
 
 ## Setup check (do this first)
 
-1. Prefer **MCP tools** if `explain_selection`, `find_definition`, `find_usages`, or `logical_section` are available.
+1. Prefer **MCP tools** if `explain_selection`, `find_definition`, `find_usages`, `logical_section`, `get_symbol_context`, or `get_project_overview` are available.
 2. Else use the CLI wrapper in [scripts/codegraph.sh](scripts/codegraph.sh) or the runtime CLI.
 3. Else use the local HTTP API on `127.0.0.1` (default port `4311`).
 
@@ -118,8 +118,12 @@ If none are available, read [references/install.md](references/install.md) and t
 1. Identify `rootPath` (workspace root), `filePath` (workspace-relative), `line` (1-based), and optional `selectedText`.
 2. Prefer reading the file around that line. Optionally call the smallest useful tool with `enrich` omitted/false:
    - unknown symbol / “what is this?” → `explain_selection` (bounded source window) or `logical_section`
+   - neighborhood / callers / related files → `get_symbol_context`
    - “where defined?” → `find_definition` (`file:line` only)
    - “where used?” → `find_usages` (`file:line` only)
+   - “who calls this?” → `trace_call_chain`
+   - repo map → `get_project_overview`
+   - name search → `search_codebase`
 3. Do **not** request AST/LSP context packs.
 4. Treat tool `data` as facts. Your prose is inference on top of those facts.
 5. Cite concrete `file:line` sources. Do not invent sources.
@@ -129,9 +133,14 @@ If none are available, read [references/install.md](references/install.md) and t
 | Tool | Purpose | Key args |
 | --- | --- | --- |
 | `explain_selection` | Bounded source window for the target | `rootPath`, `filePath`, `line`, `selectedText?` |
-| `find_definition` | Ranked definition `file:line` candidates | same location args |
-| `find_usages` | Ranked usage `file:line` candidates | same location args |
+| `find_definition` | Ranked definition `file:line` candidates (import-scoped) | same location args |
+| `find_usages` | Ranked usage `file:line` candidates (import-scoped) | same location args |
 | `logical_section` | Surrounding section excerpt | same + `depth?: statement\|function\|class\|auto` |
+| `get_symbol_context` | Defs + usages + callers + related files | location args |
+| `trace_call_chain` | One-hop call sites | location args |
+| `get_project_overview` | Indexed packages / entrypoints / symbols | `rootPath` |
+| `search_codebase` | Search indexed symbol names | `rootPath`, `query` |
+| `ensure_index` | Build/refresh local index | `rootPath`, `force?` |
 
 Details: [references/tools.md](references/tools.md)  
 Workflows: [references/workflows.md](references/workflows.md)
