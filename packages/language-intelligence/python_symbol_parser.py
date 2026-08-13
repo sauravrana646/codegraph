@@ -23,6 +23,71 @@ def _decorator_names(node: ast.AST) -> list[str]:
     return names
 
 
+def _unique_calls(items: list[dict]) -> list[dict]:
+    seen: set[tuple[str, int]] = set()
+    out: list[dict] = []
+    for item in items:
+        name = item.get("name")
+        line = item.get("line")
+        if not name or not isinstance(line, int):
+            continue
+        key = (name, line)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"name": name, "line": line})
+    return out
+
+
+def _call_name(func: ast.AST) -> str | None:
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    if isinstance(func, ast.Call):
+        return _call_name(func.func)
+    return None
+
+
+def _collect_calls(node: ast.AST) -> list[dict]:
+    calls: list[dict] = []
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        if isinstance(child, ast.Call):
+            name = _call_name(child.func)
+            if name:
+                calls.append({"name": name, "line": child.lineno})
+        calls.extend(_collect_calls(child))
+    return _unique_calls(calls)
+
+
+def _signature(node: ast.AST) -> str:
+    if isinstance(node, ast.ClassDef):
+        return f"class {node.name}"
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        prefix = "async def" if isinstance(node, ast.AsyncFunctionDef) else "def"
+        args: list[str] = []
+        for arg in [*node.args.posonlyargs, *node.args.args]:
+            args.append(arg.arg)
+        if node.args.vararg:
+            args.append(f"*{node.args.vararg.arg}")
+        for arg in node.args.kwonlyargs:
+            args.append(arg.arg)
+        if node.args.kwarg:
+            args.append(f"**{node.args.kwarg.arg}")
+        return f"{prefix} {node.name}({', '.join(args)})"
+    return ""
+
+
+def _docstring(node: ast.AST) -> str | None:
+    text = ast.get_docstring(node)
+    if not text:
+        return None
+    compact = " ".join(text.split())
+    return compact[:240]
+
+
 def _class_members(node: ast.ClassDef) -> list[dict]:
     members: list[dict] = []
 
@@ -35,7 +100,9 @@ def _class_members(node: ast.ClassDef) -> list[dict]:
                     "line": item.lineno,
                     "endLine": getattr(item, "end_lineno", item.lineno),
                     "decorators": _decorator_names(item),
-                    "docstring": ast.get_docstring(item),
+                    "docstring": _docstring(item),
+                    "calls": _collect_calls(item),
+                    "signature": _signature(item),
                 }
             )
             continue
@@ -121,8 +188,10 @@ def parse_file(file_path: str) -> dict:
                     "indent": node.col_offset,
                     "bases": [],
                     "decorators": _decorator_names(node),
-                    "docstring": ast.get_docstring(node),
+                    "docstring": _docstring(node),
                     "members": [],
+                    "signature": _signature(node),
+                    "calls": _collect_calls(node),
                 }
             )
             self.generic_visit(node)
@@ -137,8 +206,10 @@ def parse_file(file_path: str) -> dict:
                     "indent": node.col_offset,
                     "bases": [],
                     "decorators": _decorator_names(node),
-                    "docstring": ast.get_docstring(node),
+                    "docstring": _docstring(node),
                     "members": [],
+                    "signature": _signature(node),
+                    "calls": _collect_calls(node),
                 }
             )
             self.generic_visit(node)
@@ -153,13 +224,36 @@ def parse_file(file_path: str) -> dict:
                     "indent": node.col_offset,
                     "bases": [text for base in node.bases if (text := _unparse(base))],
                     "decorators": _decorator_names(node),
-                    "docstring": ast.get_docstring(node),
+                    "docstring": _docstring(node),
                     "members": _class_members(node),
+                    "signature": _signature(node),
+                    "calls": _collect_calls(node),
                 }
             )
             self.generic_visit(node)
 
     Visitor().visit(tree)
+    module_calls = _collect_calls(tree)
+    if module_calls:
+        end_line = getattr(tree, "end_lineno", None) or max(
+            (getattr(node, "end_lineno", getattr(node, "lineno", 1)) for node in tree.body),
+            default=1,
+        )
+        symbols.append(
+            {
+                "name": "<module>",
+                "kind": "function",
+                "line": 1,
+                "endLine": end_line,
+                "indent": 0,
+                "bases": [],
+                "decorators": [],
+                "docstring": None,
+                "members": [],
+                "signature": "<module>",
+                "calls": module_calls,
+            }
+        )
     return {"symbols": symbols, "imports": _imports(tree)}
 
 

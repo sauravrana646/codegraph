@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import fs from "node:fs/promises";
+import fs from "node:fs";
+import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -7,7 +8,29 @@ import { parsePythonFile, type PythonAstImport, type PythonAstSymbol } from "@co
 import { readContainedFile } from "@codegraph/security";
 import { createWorkspaceId } from "@codegraph/workspace";
 
-export const INDEX_VERSION = 1;
+import { attachCallGraph, neighborhoodLinesForPointer, resolvePythonModuleFiles } from "./graph";
+import { INDEX_VERSION, type IndexedFile, type IndexedImport, type IndexedSymbol, type WorkspaceIndex } from "./types";
+
+export { INDEX_VERSION } from "./types";
+export type {
+  CallResolveVia,
+  GraphEdge,
+  IndexedCallSite,
+  IndexedFile,
+  IndexedImport,
+  IndexedSymbol,
+  SymbolNeighborhood,
+  WorkspaceIndex
+} from "./types";
+export {
+  attachCallGraph,
+  findIndexedDefinitions,
+  formatNeighborhoodLines,
+  lookupNeighborhood,
+  neighborhoodLinesForPointer,
+  resolvePythonModuleFiles
+} from "./graph";
+
 export const MAX_INDEXED_PYTHON_FILES = 2000;
 export const MAX_INDEX_FILE_BYTES = 1_500_000;
 
@@ -34,40 +57,6 @@ const SKIP_DIRS = new Set([
   ".idea"
 ]);
 
-export interface IndexedImport {
-  kind: "import" | "from";
-  module: string;
-  names: string[];
-  alias?: string | null;
-  line: number;
-}
-
-export interface IndexedSymbol {
-  name: string;
-  kind: "function" | "class";
-  line: number;
-  endLine: number;
-  bases: string[];
-  members: string[];
-}
-
-export interface IndexedFile {
-  relativePath: string;
-  contentHash: string;
-  mtimeMs: number;
-  size: number;
-  symbols: IndexedSymbol[];
-  imports: IndexedImport[];
-}
-
-export interface WorkspaceIndex {
-  version: number;
-  workspaceId: string;
-  rootPath: string;
-  updatedAt: number;
-  files: Record<string, IndexedFile>;
-}
-
 export interface IndexUpdateResult {
   index: WorkspaceIndex;
   changed: number;
@@ -91,7 +80,7 @@ export function indexStoragePath(rootPath: string): string {
 }
 
 async function walkPythonFiles(rootPath: string, currentDir = rootPath): Promise<string[]> {
-  const entries = await fs.readdir(currentDir, { withFileTypes: true });
+  const entries = await fsp.readdir(currentDir, { withFileTypes: true });
   const files: string[] = [];
 
   for (const entry of entries) {
@@ -133,7 +122,14 @@ function toIndexedSymbols(symbols: PythonAstSymbol[]): IndexedSymbol[] {
     line: symbol.line,
     endLine: symbol.endLine,
     bases: symbol.bases ?? [],
-    members: (symbol.members ?? []).map((member) => member.name)
+    members: (symbol.members ?? []).map((member) => member.name),
+    signature: symbol.signature,
+    docstring: symbol.docstring ?? undefined,
+    calls: (symbol.calls ?? [])
+      .filter((call) => call.name && call.line)
+      .map((call) => ({ name: call.name, line: call.line })),
+    callees: [],
+    callers: []
   }));
 }
 
@@ -147,30 +143,44 @@ function toIndexedImports(imports: PythonAstImport[]): IndexedImport[] {
   }));
 }
 
+function parseIndexPayload(raw: string, rootPath: string): WorkspaceIndex | undefined {
+  const parsed = JSON.parse(raw) as WorkspaceIndex;
+  if (parsed.version !== INDEX_VERSION || parsed.rootPath !== path.resolve(rootPath)) {
+    return undefined;
+  }
+  return parsed;
+}
+
 async function loadIndex(storagePath: string, rootPath: string): Promise<WorkspaceIndex | undefined> {
   try {
-    const raw = await fs.readFile(storagePath, "utf8");
-    const parsed = JSON.parse(raw) as WorkspaceIndex;
-    if (parsed.version !== INDEX_VERSION || parsed.rootPath !== path.resolve(rootPath)) {
-      return undefined;
-    }
-    return parsed;
+    const raw = await fsp.readFile(storagePath, "utf8");
+    return parseIndexPayload(raw, rootPath);
+  } catch {
+    return undefined;
+  }
+}
+
+export function readWorkspaceIndexSync(rootPath: string): WorkspaceIndex | undefined {
+  try {
+    const raw = fs.readFileSync(indexStoragePath(rootPath), "utf8");
+    return parseIndexPayload(raw, rootPath);
   } catch {
     return undefined;
   }
 }
 
 async function saveIndex(storagePath: string, index: WorkspaceIndex): Promise<void> {
-  await fs.mkdir(path.dirname(storagePath), { recursive: true });
+  attachCallGraph(index);
+  await fsp.mkdir(path.dirname(storagePath), { recursive: true });
   const tmp = `${storagePath}.tmp`;
-  await fs.writeFile(tmp, `${JSON.stringify(index)}\n`, "utf8");
-  await fs.rename(tmp, storagePath);
+  await fsp.writeFile(tmp, `${JSON.stringify(index)}\n`, "utf8");
+  await fsp.rename(tmp, storagePath);
 }
 
 async function indexOneFile(rootPath: string, relativePath: string): Promise<IndexedFile | undefined> {
   try {
     const contained = await readContainedFile(rootPath, relativePath);
-    const stat = await fs.stat(contained.absolutePath);
+    const stat = await fsp.stat(contained.absolutePath);
     if (stat.size > MAX_INDEX_FILE_BYTES) {
       return undefined;
     }
@@ -230,7 +240,7 @@ export async function ensureWorkspaceIndex(
     }
     try {
       const contained = await readContainedFile(resolved, relativePath);
-      const stat = await fs.stat(contained.absolutePath);
+      const stat = await fsp.stat(contained.absolutePath);
       const hash = hashContent(contained.content);
       if (existing.contentHash === hash && Math.abs(existing.mtimeMs - stat.mtimeMs) < 2) {
         files[relativePath] = existing;
@@ -326,39 +336,17 @@ export async function readWorkspaceIndex(rootPath: string): Promise<WorkspaceInd
   return loadIndex(indexStoragePath(rootPath), rootPath);
 }
 
-export function listIndexedFiles(index: WorkspaceIndex): IndexedFile[] {
-  return Object.values(index.files);
+export function readNeighborhoodLines(
+  rootPath: string,
+  filePath: string,
+  line: number,
+  selectedText?: string
+): string[] {
+  return neighborhoodLinesForPointer(readWorkspaceIndexSync(rootPath), filePath, line, selectedText);
 }
 
-export function resolvePythonModuleFiles(
-  index: WorkspaceIndex,
-  fromFile: string,
-  module: string
-): string[] {
-  const fromDir = path.posix.dirname(normalizeRel(fromFile));
-  const candidates: string[] = [];
-
-  if (module.startsWith(".")) {
-    let dots = 0;
-    while (module[dots] === ".") {
-      dots += 1;
-    }
-    let dir = fromDir;
-    for (let step = 1; step < dots; step += 1) {
-      dir = path.posix.dirname(dir);
-    }
-    const rest = module.slice(dots).replace(/\./g, "/");
-    const base = rest ? path.posix.join(dir === "." ? "" : dir, rest) : dir;
-    candidates.push(`${base}.py`, path.posix.join(base, "__init__.py"));
-  } else {
-    const rel = module.replace(/\./g, "/");
-    for (const prefix of ["", "src/"]) {
-      const base = `${prefix}${rel}`.replace(/^\/+/, "");
-      candidates.push(`${base}.py`, path.posix.join(base, "__init__.py"));
-    }
-  }
-
-  return [...new Set(candidates.map(normalizeRel))].filter((file) => Boolean(index.files[file]));
+export function listIndexedFiles(index: WorkspaceIndex): IndexedFile[] {
+  return Object.values(index.files);
 }
 
 export function filesImportingSymbol(
@@ -392,27 +380,4 @@ export function filesImportingSymbol(
   }
 
   return [...new Set(matches)];
-}
-
-export function findIndexedDefinitions(
-  index: WorkspaceIndex,
-  symbolName: string,
-  preferFile?: string
-): Array<IndexedSymbol & { file: string }> {
-  const matches: Array<IndexedSymbol & { file: string }> = [];
-  for (const file of Object.values(index.files)) {
-    for (const symbol of file.symbols) {
-      if (symbol.name === symbolName) {
-        matches.push({ ...symbol, file: normalizeRel(file.relativePath) });
-      }
-    }
-  }
-  if (!preferFile) {
-    return matches;
-  }
-  const preferred = normalizeRel(preferFile);
-  return [
-    ...matches.filter((item) => item.file === preferred),
-    ...matches.filter((item) => item.file !== preferred)
-  ];
 }

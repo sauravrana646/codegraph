@@ -170,7 +170,8 @@ Not part of Live Explain / enrichment prompts:
 
 Runtime-owned:
 
-- call graph
+- call graph (precomputed callers/callees on the local index; 3-tier resolve: same-file, import-scoped, unique-name)
+- compact symbol neighborhood served to Agent so it does not re-read the repository
 - dependency graph
 - test relationships
 - configuration relationships

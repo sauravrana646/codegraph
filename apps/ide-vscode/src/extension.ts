@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { buildRepoBrief, buildSelectionContext, ensureWorkspaceIndex, reindexPaths } from "@codegraph/core";
+import { buildRepoBrief, buildSelectionContext, ensureWorkspaceIndex, readNeighborhoodLines, reindexPaths } from "@codegraph/core";
 import {
   applyEnrichmentText,
   buildPointerAgentHandoffPrompt,
@@ -369,7 +369,13 @@ export function activate(context: vscode.ExtensionContext): void {
     if (request) {
       const expected = buildPointerAgentHandoffPrompt({
         ...request,
-        depth: explainDepthSetting()
+        depth: explainDepthSetting(),
+        neighborhoodLines: readNeighborhoodLines(
+          request.rootPath,
+          request.filePath,
+          request.line,
+          request.selectedText
+        )
       });
       logCodegraph(`expectedHandoffChars=${expected.length}`);
       logCodegraph("--- expected slim prompt ---");
@@ -1076,7 +1082,13 @@ async function enrichViaAgent(
 ): Promise<EnrichedSelectionContext> {
   const prompt = buildPointerAgentHandoffPrompt({
     ...request,
-    depth: explainDepthSetting()
+    depth: explainDepthSetting(),
+    neighborhoodLines: readNeighborhoodLines(
+      request.rootPath,
+      request.filePath,
+      request.line,
+      request.selectedText
+    )
   });
   logCodegraph(`Agent prompt ${SLIM_HANDOFF_MARKER} chars=${prompt.length}`);
   logCodegraph(prompt);

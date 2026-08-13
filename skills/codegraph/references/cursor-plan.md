@@ -13,8 +13,8 @@ Neither path ships AST/LSP context packs.
 
 ## Agent mode
 
-1. Extension sends a **slim pointer** only (`codegraph-slim-v3`: file / line / symbol).
-2. Agent reads source (or bounded tools) and writes the tutoring answer.
+1. Extension sends a **slim pointer** plus a compact **index neighborhood** (`codegraph-slim-v4`: file / line / symbol / callers / callees).
+2. Agent reads **only the target section** (and neighborhood files if quoting). Do not grep the repo when NEIGHBORHOOD is present.
 3. Never ask for API keys.
 4. Cite real `file:line` values.
 

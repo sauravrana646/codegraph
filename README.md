@@ -302,14 +302,14 @@ Because Cursor is VS Code-compatible, the extension can be developed with the no
 4. Start an Extension Development Host using the standard VS Code/Cursor extension-debug workflow.
 5. In the new host window, open a workspace with a Python file.
 6. Toggle **Codegraph: Toggle Live Explain Mode** once (or click the status bar item).
-7. Move the cursor / select symbols — Agent mode auto-sends a **slim pointer** (`codegraph-slim-v3`); Agent reads source and explains. API key mode uses a source window in the side panel.
+7. Move the cursor / select symbols — Agent mode auto-sends a **slim pointer + index neighborhood** (`codegraph-slim-v4`); Agent reads the target section and explains. API key mode uses a source window in the side panel.
 8. Optional: **Ask Cursor Agent** / Diagnose Live Explain from the Command Palette.
 
 Current behavior:
 
 - **Live Explain** — toggle once; auto-explains as you navigate (debounced, Python-first)
 - **No AST/LSP context packs** on Agent, API key, MCP, or CLI paths
-- Agent mode: slim pointer only; Agent reads source (optional bounded tools for sections/locations)
+- Agent mode: slim pointer + **index neighborhood** (defs/callers/callees); Agent reads the target section, not the whole repo
 - API key mode: source window + file:line index over HTTP, then in-panel enrichment
 - Command palette: Live Explain, Explain Selection, Find Definition, Find Usages, Diagnose
 - Output channel **Codegraph** logs handoff length / marker for debugging

@@ -2,9 +2,9 @@
 
 ## Explain an unfamiliar symbol
 
-1. Gather location (`rootPath`, `filePath`, `line`, `selectedText`).
-2. Call `explain_selection` with `enrich` omitted or `false`.
-3. Answer from `data.explanation` + `data.context` sources, expanding narrative yourself if needed.
+1. If the Live Explain handoff includes **NEIGHBORHOOD**, trust those `file:line` facts and read only the target section — do not scan the repo.
+2. Otherwise gather location (`rootPath`, `filePath`, `line`, `selectedText`) and call `get_symbol_context` or `explain_selection`.
+3. Answer from neighborhood / tool facts, expanding narrative yourself.
 4. On Cursor plans, never request API keys and never set `enrich: true`.
 
 See also [cursor-plan.md](cursor-plan.md).
@@ -23,9 +23,9 @@ See also [cursor-plan.md](cursor-plan.md).
 
 ## Agent answer with citations
 
-1. Run Codegraph tools before writing a definitive explanation.
+1. Prefer the handoff NEIGHBORHOOD (or `get_symbol_context`) before reading extra files.
 2. Separate:
-   - Facts: sources, definitions, usages, metadata
+   - Facts: sources, definitions, callers/callees, metadata
    - Inferences: your synthesis beyond returned sources
 3. If capability tier/confidence is low, say uncertainty explicitly.
 

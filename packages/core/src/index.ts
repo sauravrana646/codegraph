@@ -5,6 +5,7 @@ import { parsePythonFile, type PythonAstMember, type PythonAstSymbol } from "@co
 import {
   ensureWorkspaceIndex,
   reindexPaths,
+  lookupNeighborhood,
   type IndexedSymbol,
   type WorkspaceIndex
 } from "@codegraph/indexer";
@@ -36,7 +37,7 @@ export {
   searchIndexedSymbols,
   traceCallChain
 } from "./context";
-export { ensureWorkspaceIndex, reindexPaths } from "@codegraph/indexer";
+export { ensureWorkspaceIndex, lookupNeighborhood, readNeighborhoodLines, reindexPaths } from "@codegraph/indexer";
 export { loadSession } from "@codegraph/sessions";
 
 export interface ExplainSelectionRequest {
@@ -710,15 +711,23 @@ async function analyzeSelection(request: ExplainSelectionRequest): Promise<Selec
 
   const effectiveSymbol = selectedSymbol ?? primaryDefinition?.name;
   const definitionFiles = definitions.map((item) => item.file);
-  const references = effectiveSymbol
-    ? await collectImportScopedUsages(
-        workspace.rootPath,
-        index,
-        effectiveSymbol,
-        definitionFiles,
-        file
-      )
-    : [];
+  const neighborhood = lookupNeighborhood(index, file, request.line, effectiveSymbol);
+  const graphCallers = neighborhood?.callers ?? [];
+  const graphCallees = neighborhood?.callees ?? [];
+  const references =
+    graphCallers.length > 0 || graphCallees.length > 0
+      ? [...graphCallers, ...graphCallees].map((edge) =>
+          createSourceReference(edge.file, edge.line, "", "call", Math.round(edge.confidence * 100))
+        )
+      : effectiveSymbol
+        ? await collectImportScopedUsages(
+            workspace.rootPath,
+            index,
+            effectiveSymbol,
+            definitionFiles,
+            file
+          )
+        : [];
   const relatedFiles = rankRelatedFiles(definitions, references);
 
   const resolvedDefinition = Boolean(primaryDefinition) || definitionSymbols.length > 0;

@@ -37,7 +37,7 @@ Turn Live ON once, then **only move your cursor** — no typing, no Enter.
 - **Standard** — purpose + fields + notes  
 - **Deep** — use case, concrete example, why-not-simpler alternatives, and why this design is better
 
-**Agent mode (default):** a slim pointer (`codegraph-slim-v3`) is auto-sent to Cursor Agent chat. Agent reads the source and explains. On macOS, allow **Accessibility** for Cursor the first time (System Settings → Privacy & Security → Accessibility).
+**Agent mode (default):** a slim pointer plus index neighborhood (`codegraph-slim-v4`) is auto-sent to Cursor Agent chat. Agent reads the **target section** (not the whole repo) and explains. On macOS, allow **Accessibility** for Cursor the first time (System Settings → Privacy & Security → Accessibility).
 
 **API key mode:** pick a provider (OpenRouter, OpenAI, Groq, Gemini, …); base URL is set automatically. You only enter **API key** + **model**. Enrichment shows in the Codegraph panel.
 
@@ -61,7 +61,7 @@ Settings:
 - `Codegraph: Test API Connection`
 - `Codegraph: Repo Brief` — first-look map of the Python workspace
 - `Codegraph: Set Explain Depth` — short / standard / deep
-- `Codegraph: Rebuild Local Index` — incremental Python symbol/import index used by Agent tools
+- `Codegraph: Rebuild Local Index` — rebuild the Python symbol + call-graph index used for Agent neighborhood and tools
 
 ### Model access
 

@@ -9,6 +9,11 @@ const execFileAsync = promisify(execFile);
 export type PythonAstSymbolKind = "function" | "class";
 export type PythonAstMemberKind = "field" | "method";
 
+export interface PythonCallSite {
+  name: string;
+  line: number;
+}
+
 export interface PythonAstMember {
   kind: PythonAstMemberKind;
   name: string;
@@ -18,6 +23,8 @@ export interface PythonAstMember {
   value?: string | null;
   decorators?: string[];
   docstring?: string | null;
+  signature?: string;
+  calls?: PythonCallSite[];
 }
 
 export interface PythonAstSymbol {
@@ -30,6 +37,8 @@ export interface PythonAstSymbol {
   decorators?: string[];
   docstring?: string | null;
   members?: PythonAstMember[];
+  signature?: string;
+  calls?: PythonCallSite[];
 }
 
 export interface PythonAstImport {
@@ -92,7 +101,9 @@ function regexFallback(content: string): PythonAstParseResult {
       bases: [],
       decorators: [],
       docstring: null,
-      members: []
+      members: [],
+      signature: `${match[2]} ${match[3]}`,
+      calls: []
     });
   });
 

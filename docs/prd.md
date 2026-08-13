@@ -135,7 +135,7 @@ The system shall discover repository structure without executing repository code
 
 ## FR-003 Local indexing
 
-The system shall create a local index for supported source files and relevant repository metadata.
+The system shall create a local index for supported source files, including a precomputed symbol/call neighborhood (definitions, callers, callees) so generative explain does not re-read the repository.
 
 ## FR-004 Incremental indexing
 
@@ -151,7 +151,7 @@ The system shall operate through capability tiers for **indexing / navigation re
 - Tier 3 — External language-server experiments (optional; not required for explain)
 - Tier 4 — Deep relationship intelligence
 
-**Explain / Live Explain architecture (all product paths):** do **not** assemble or ship AST/LSP context packs. Use a slim pointer (file/line/symbol) and/or a bounded source window; the generative model (Agent or API key) writes the narrative.
+**Explain / Live Explain architecture (all product paths):** do **not** assemble or ship AST/LSP context packs. Use a slim pointer (file/line/symbol) plus a compact index neighborhood when available, and/or a bounded source window; the generative model (Agent or API key) writes the narrative.
 
 Each operation should expose:
 

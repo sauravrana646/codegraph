@@ -65,7 +65,7 @@ import json, os, pathlib
 state = json.loads(pathlib.Path(os.environ["STATE_FILE"]).read_text())
 symbol = state.get("selection") or state.get("selectedText") or "(cursor only)"
 print(
-    "codegraph-slim-v3\n"
+    "codegraph-slim-v4\n"
     "Use the Codegraph skill / MCP tools.\n"
     "Codegraph Live Explain — answer in this Agent chat.\n"
     "Do not ask for API keys.\n"

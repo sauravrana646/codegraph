@@ -4,8 +4,8 @@ This is the interactive loop that matches the local **learn-codebase** skill pat
 
 1. Toggle Live Explain **once** (status bar / Command Palette).
 2. Extension writes cursor state on every move (no Command Palette per symbol).
-3. Auto-handoff / watcher wakes Cursor Agent with a **slim pointer** only (`codegraph-slim-v3`).
-4. Agent **reads the source** (or a bounded section tool) and explains — no AST/LSP context packs on any path.
+3. Auto-handoff / watcher wakes Cursor Agent with a **slim pointer + index neighborhood** (`codegraph-slim-v4`).
+4. Agent **reads the target section** (not the whole repo). If NEIGHBORHOOD lists callers/callees, treat them as resolved — no AST/LSP context packs on any path.
 
 ## Runtime files
 
@@ -16,7 +16,7 @@ Primary (Codegraph):
   enabled            # present only while Live Explain is ON
   state.json         # latest path / line / selection
   wake.log           # append-only cursor-move events
-  pending-prompt.md  # slim pointer (codegraph-slim-v3)
+  pending-prompt.md  # slim pointer + neighborhood (codegraph-slim-v4)
 ```
 
 Compatibility mirror (so an existing learn-codebase watcher still works):
@@ -47,7 +47,7 @@ Settings:
 
 4. In Cursor: **Codegraph: Toggle Live Explain Mode** → ON.
 5. Open Agent chat once and say: `Start Codegraph live tutoring` (or `/codegraph`).
-6. Move the cursor — Agent gets `codegraph-slim-v3` pointer and reads source itself.
+6. Move the cursor — Agent gets `codegraph-slim-v4` pointer + neighborhood and reads the target section only.
 
 ## Stop
 
@@ -60,8 +60,8 @@ Settings:
 When woken for a live cursor move:
 
 1. Read the slim pointer in `~/.cursor/codegraph/state.json` / `pending-prompt.md`.
-2. Open/read the file around `line` (or `logical_section` / `explain_selection` for a bounded window).
-3. Optionally use `find_definition` / `find_usages` for `file:line` locations only.
+2. If **NEIGHBORHOOD** is present, trust those defs/callers/callees — do not grep the repo.
+3. Open/read **only** the target file around `line` (or `logical_section` for a bounded window).
 4. Respond in **learn-codebase style** (Purpose / Fields / Notes / keep moving).
 5. Do **not** ask for API keys, AST dumps, or LSP context.
 

@@ -3,8 +3,10 @@ import {
   filesImportingSymbol,
   findIndexedDefinitions,
   listIndexedFiles,
+  lookupNeighborhood,
   readWorkspaceIndex,
   resolvePythonModuleFiles,
+  type GraphEdge,
   type IndexedSymbol,
   type IndexUpdateResult,
   type WorkspaceIndex
@@ -38,6 +40,7 @@ export interface SymbolContext {
   references: SourceReference[];
   relatedFiles: SourceReference[];
   callers: SourceReference[];
+  callees: SourceReference[];
 }
 
 export interface CallChainHop {
@@ -82,6 +85,9 @@ export function buildProjectOverview(index: WorkspaceIndex): ProjectOverview {
       packages.add(top);
     }
     for (const symbol of file.symbols) {
+      if (symbol.name === "<module>") {
+        continue;
+      }
       if (symbol.kind === "class") {
         classCount += 1;
       } else {
@@ -138,6 +144,9 @@ export function searchIndexedSymbols(index: WorkspaceIndex, query: string, limit
   for (const file of listIndexedFiles(index)) {
     const fileScore = normalizeRel(file.relativePath).toLowerCase().includes(needle) ? 8 : 0;
     for (const symbol of file.symbols) {
+      if (symbol.name === "<module>") {
+        continue;
+      }
       const name = symbol.name.toLowerCase();
       let score = fileScore;
       if (name === needle) {
@@ -283,6 +292,15 @@ export function rankRelatedFiles(
   return ranked;
 }
 
+function edgeToRef(edge: GraphEdge, kind: SourceReference["kind"]): SourceReference {
+  return {
+    file: edge.file,
+    line: edge.line,
+    kind,
+    score: Math.round(edge.confidence * 100)
+  };
+}
+
 export async function buildSymbolContext(input: {
   rootPath: string;
   filePath: string;
@@ -290,6 +308,26 @@ export async function buildSymbolContext(input: {
   symbolName: string;
 }): Promise<SymbolContext> {
   const index = await requireIndex(input.rootPath);
+  const neighborhood = lookupNeighborhood(index, input.filePath, input.line, input.symbolName);
+  if (
+    neighborhood &&
+    (neighborhood.callers.length > 0 ||
+      neighborhood.callees.length > 0 ||
+      neighborhood.definitions.length > 0)
+  ) {
+    const callers = neighborhood.callers.map((edge) => edgeToRef(edge, "call"));
+    const callees = neighborhood.callees.map((edge) => edgeToRef(edge, "call"));
+    const definitions = neighborhood.definitions.map((edge) => edgeToRef(edge, "definition"));
+    return {
+      symbol: neighborhood.symbol,
+      definitions,
+      references: [...callers, ...callees],
+      relatedFiles: neighborhood.related.map((edge) => edgeToRef(edge, "mention")),
+      callers,
+      callees
+    };
+  }
+
   const defs = preferImportedDefinitions(index, input.filePath, input.symbolName);
   const definitions: SourceReference[] = defs.map((item) => ({
     file: item.file,
@@ -311,7 +349,8 @@ export async function buildSymbolContext(input: {
     definitions,
     references,
     relatedFiles: rankRelatedFiles(definitions, references),
-    callers
+    callers,
+    callees: []
   };
 }
 

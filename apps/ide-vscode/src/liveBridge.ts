@@ -4,6 +4,7 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 
 import { buildPointerAgentHandoffPrompt, type ExplainDepth } from "@codegraph/model-gateway";
+import { readNeighborhoodLines } from "@codegraph/core";
 
 export interface LiveCursorState {
   path: string;
@@ -74,7 +75,13 @@ function writePendingPrompt(dir: string, state: LiveCursorState): void {
     filePath: state.filePath,
     line: state.line,
     selectedText: state.selection || state.selectedText,
-    depth
+    depth,
+    neighborhoodLines: readNeighborhoodLines(
+      state.rootPath,
+      state.filePath,
+      state.line,
+      state.selection || state.selectedText
+    )
   });
   fs.writeFileSync(path.join(dir, "pending-prompt.md"), `${prompt}\n`, "utf8");
 }

@@ -85,7 +85,7 @@ Use `depth: function` or `class` when you need a bounded excerpt for editing/rev
 
 ### `get_symbol_context`
 
-Returns `{ symbol, definitions, references, relatedFiles, callers }` as `file:line` facts from the local index (import-scoped).
+Returns `{ symbol, definitions, references, relatedFiles, callers, callees }` as `file:line` facts from the local call graph (no full-repo re-read).
 
 ### `trace_call_chain`
 

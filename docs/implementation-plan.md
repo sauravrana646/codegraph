@@ -79,7 +79,7 @@ Can provide:
 
 Runtime-owned analysis:
 
-- call graph
+- call graph (precomputed callers/callees + compact neighborhood for Agent)
 - dependency graph
 - test relationships
 - configuration relationships

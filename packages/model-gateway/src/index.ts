@@ -590,9 +590,11 @@ export interface AgentPointerRequest {
   line: number;
   selectedText?: string;
   depth?: ExplainDepth;
+  /** Precomputed index neighborhood (defs/callers/callees) — do not grep the repo. */
+  neighborhoodLines?: string[];
 }
 
-export const SLIM_HANDOFF_MARKER = "codegraph-slim-v3";
+export const SLIM_HANDOFF_MARKER = "codegraph-slim-v4";
 
 function answerFormatForDepth(depth: ExplainDepth): string[] {
   if (depth === "short") {
@@ -642,6 +644,8 @@ function answerFormatForDepth(depth: ExplainDepth): string[] {
 export function buildPointerAgentHandoffPrompt(request: AgentPointerRequest): string {
   const symbol = request.selectedText?.trim() || "(cursor only)";
   const depth: ExplainDepth = request.depth ?? "standard";
+  const neighborhood = request.neighborhoodLines?.filter((line) => line.trim()) ?? [];
+  const hasNeighborhood = neighborhood.length > 0;
   return [
     SLIM_HANDOFF_MARKER,
     "Codegraph Live Explain — answer in this Agent chat.",
@@ -655,11 +659,28 @@ export function buildPointerAgentHandoffPrompt(request: AgentPointerRequest): st
     `symbol: ${symbol}`,
     `depth: ${depth}`,
     "",
-    "REQUIRED FLOW:",
-    "1) Open/read `filePath` around `line` (or call Codegraph `logical_section`).",
-    "2) For better grounding, call local Codegraph tools (facts only, file:line — no AST/LSP dumps):",
-    "   `get_symbol_context`, `find_definition`, `find_usages`, `trace_call_chain`, `get_project_overview`, `search_codebase`.",
-    "3) Explain from source + those locations. Do not request AST/LSP context blobs.",
+    ...(hasNeighborhood
+      ? [
+          "NEIGHBORHOOD (local index — trust these file:line facts):",
+          ...neighborhood,
+          "",
+          "TRUST PROTOCOL:",
+          "- Treat listed defs/callers/callees/related as already resolved. Do not grep, glob, or scan the repo for the same facts.",
+          "- Read ONLY the target section (`filePath` around `line`). Open a neighborhood file only if you need to quote it.",
+          "- Skip `get_symbol_context` / `find_usages` / `search_codebase` unless NEIGHBORHOOD is empty or a listed path is missing.",
+          "",
+          "REQUIRED FLOW:",
+          "1) Open/read `filePath` around `line` (or call Codegraph `logical_section`).",
+          "2) Use NEIGHBORHOOD locations for related functions. Do not re-index the repository.",
+          "3) Explain from source + those locations. Do not request AST/LSP context blobs."
+        ]
+      : [
+          "REQUIRED FLOW:",
+          "1) Open/read `filePath` around `line` (or call Codegraph `logical_section`).",
+          "2) For better grounding, call local Codegraph tools (facts only, file:line — no AST/LSP dumps):",
+          "   `get_symbol_context`, `find_definition`, `find_usages`, `trace_call_chain`, `get_project_overview`, `search_codebase`.",
+          "3) Explain from source + those locations. Do not request AST/LSP context blobs."
+        ]),
     "",
     ...answerFormatForDepth(depth),
     "",

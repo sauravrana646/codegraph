@@ -160,7 +160,7 @@ async function main(): Promise<void> {
   registerTool(
     "get_symbol_context",
     {
-      description: "Definitions, import-scoped usages, callers, and related files for a symbol.",
+                    description: "Index neighborhood: defs, callers, callees, related files (no repo re-scan).",
       inputSchema: locationShape
     },
     async (args) => envelopeResult(await runGetSymbolContextTool(asToolRequest(args as LocationArgs)))

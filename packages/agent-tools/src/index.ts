@@ -159,7 +159,8 @@ export async function runGetSymbolContextTool(request: ToolRequest): Promise<Too
     definitions: context.definitions.slice(0, 6).map((item) => compactRef(item)),
     references: context.references.slice(0, 10).map((item) => compactRef(item)),
     relatedFiles: context.relatedFiles.slice(0, 8).map((item) => compactRef(item)),
-    callers: context.callers.slice(0, 8).map((item) => compactRef(item))
+    callers: context.callers.slice(0, 8).map((item) => compactRef(item)),
+    callees: context.callees.slice(0, 8).map((item) => compactRef(item))
   });
 }
 
@@ -173,7 +174,8 @@ export async function runTraceCallChainTool(request: ToolRequest): Promise<ToolE
   const hops = await traceCallChain({
     rootPath: request.rootPath,
     filePath: request.filePath,
-    symbolName: symbol
+    symbolName: symbol,
+    line: request.line
   });
   return toolSuccess("trace-call-chain", { symbol, hops });
 }
