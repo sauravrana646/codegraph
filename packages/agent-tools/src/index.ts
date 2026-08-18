@@ -187,6 +187,11 @@ export async function runEnsureIndexTool(request: ToolRequest): Promise<ToolEnve
     changed: result.changed,
     removed: result.removed,
     unchanged: result.unchanged,
+    skipped: result.skipped,
+    failed: result.failed,
+    parseAst: result.parseAst,
+    parseRegex: result.parseRegex,
+    astUnavailable: result.astUnavailable,
     updatedAt: result.index.updatedAt
   });
 }

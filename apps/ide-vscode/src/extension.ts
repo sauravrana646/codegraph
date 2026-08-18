@@ -1,9 +1,19 @@
+import { randomBytes } from "node:crypto";
 import * as vscode from "vscode";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { buildRepoBrief, buildSelectionContext, ensureWorkspaceIndex, readNeighborhoodLines, reindexPaths } from "@codegraph/core";
+import {
+  buildRepoBrief,
+  buildSelectionContext,
+  ensureWorkspaceIndex,
+  getCachedWorkspaceIndex,
+  indexStoragePath,
+  neighborhoodLinesForPointer,
+  readWorkspaceIndex,
+  reindexPaths
+} from "@codegraph/core";
 import {
   applyEnrichmentText,
   buildPointerAgentHandoffPrompt,
@@ -54,6 +64,102 @@ let lastAgentHandOffMs = 0;
 let agentChatOpened = false;
 /** Same-symbol skip key: root|file|symbol (line changes within a symbol do not re-fire). */
 let lastLiveExplainKey = "";
+const API_KEY_SECRET = "codegraph.enrichment.apiKey";
+let cachedApiKey: string | undefined;
+let warnedRegexFallback = false;
+const indexWatchers = new Map<string, fs.FSWatcher>();
+const indexReloadTimers = new Map<string, NodeJS.Timeout>();
+
+function folderForIndex(uri?: vscode.Uri): vscode.WorkspaceFolder | undefined {
+  const target = uri ?? vscode.window.activeTextEditor?.document.uri;
+  if (target) {
+    const folder = vscode.workspace.getWorkspaceFolder(target);
+    if (folder) {
+      return folder;
+    }
+  }
+  return vscode.workspace.workspaceFolders?.[0];
+}
+
+function neighborhoodForRequest(request: {
+  rootPath: string;
+  filePath: string;
+  line: number;
+  selectedText?: string;
+}): string[] {
+  const cached = getCachedWorkspaceIndex(request.rootPath);
+  if (!cached) {
+    void readWorkspaceIndex(request.rootPath);
+    return [];
+  }
+  return neighborhoodLinesForPointer(cached, request.filePath, request.line, request.selectedText);
+}
+
+function watchIndexFile(rootPath: string): void {
+  const storage = indexStoragePath(rootPath);
+  if (indexWatchers.has(storage)) {
+    return;
+  }
+  try {
+    fs.mkdirSync(path.dirname(storage), { recursive: true });
+    const watcher = fs.watch(path.dirname(storage), { persistent: false }, (_event, filename) => {
+      if (filename && filename !== "index.json" && filename !== "index.json.tmp") {
+        return;
+      }
+      const previous = indexReloadTimers.get(storage);
+      if (previous) {
+        clearTimeout(previous);
+      }
+      indexReloadTimers.set(
+        storage,
+        setTimeout(() => {
+          void readWorkspaceIndex(rootPath);
+        }, 250)
+      );
+    });
+    indexWatchers.set(storage, watcher);
+  } catch {
+    // ignore missing dirs
+  }
+}
+
+async function rememberIndexResult(
+  result: Awaited<ReturnType<typeof ensureWorkspaceIndex>>
+): Promise<void> {
+  watchIndexFile(result.index.rootPath);
+  if (!warnedRegexFallback && (result.parseRegex > 0 || result.astUnavailable)) {
+    warnedRegexFallback = true;
+    const detail = result.astUnavailable
+      ? "Python AST parser is unavailable; falling back to regex (no call graph)."
+      : `${result.parseRegex} file(s) used regex fallback instead of the Python AST parser.`;
+    logCodegraph(detail, true);
+    void vscode.window.showWarningMessage(`Codegraph: ${detail}`);
+  }
+}
+
+async function migrateAndLoadApiKey(context: vscode.ExtensionContext): Promise<void> {
+  const enrichment = vscode.workspace.getConfiguration("codegraph.enrichment");
+  const inspected = enrichment.inspect<string>("apiKey");
+  const fromWorkspace = inspected?.workspaceValue?.trim();
+  const fromGlobal = inspected?.globalValue?.trim();
+  const fromConfig = fromWorkspace || fromGlobal || enrichment.get<string>("apiKey")?.trim();
+  const existing = await context.secrets.get(API_KEY_SECRET);
+
+  if (fromConfig && !existing) {
+    await context.secrets.store(API_KEY_SECRET, fromConfig);
+    cachedApiKey = fromConfig;
+    void vscode.window.showInformationMessage("Codegraph migrated the API key into Secret Storage.");
+  } else {
+    cachedApiKey = existing || undefined;
+  }
+
+  if (fromWorkspace) {
+    await enrichment.update("apiKey", undefined, vscode.ConfigurationTarget.Workspace);
+  }
+  if (fromGlobal) {
+    await enrichment.update("apiKey", undefined, vscode.ConfigurationTarget.Global);
+  }
+}
 
 function getOutputChannel(): vscode.OutputChannel {
   if (!outputChannel) {
@@ -181,7 +287,7 @@ async function setLiveExplainEnabled(enabled: boolean, announce = true): Promise
 
   if (enabled) {
     lastLiveExplainKey = "";
-    const folder = vscode.workspace.workspaceFolders?.[0];
+    const folder = folderForIndex();
     if (folder && extensionContext) {
       const briefKey = `codegraph.repoBrief.done:${folder.uri.fsPath}`;
       if (!extensionContext.workspaceState.get<boolean>(briefKey)) {
@@ -214,7 +320,7 @@ async function setLiveExplainEnabled(enabled: boolean, announce = true): Promise
       return;
     }
     if (editor) {
-      captureEditorState(editor, request);
+      captureEditorState(editor, request, undefined, neighborhoodForRequest(request));
     }
     if (extensionContext) {
       // Always hand off in agent mode — this was previously false and blocked all Live Agent sends.
@@ -225,7 +331,7 @@ async function setLiveExplainEnabled(enabled: boolean, announce = true): Promise
       currentSession.request.filePath,
       currentSession.request.line,
       currentSession.result,
-      { logoUri: extensionIconWebviewUri(panel.webview) }
+      { logoUri: extensionIconWebviewUri(panel.webview), webview: panel.webview }
     );
   }
 }
@@ -302,7 +408,9 @@ export function activate(context: vscode.ExtensionContext): void {
     : monorepoParser;
 
   logCodegraph(`Activated. parser=${process.env.CODEGRAPH_PYTHON_PARSER}`, true);
-  void warmWorkspaceIndex();
+  void migrateAndLoadApiKey(context).then(() => {
+    void warmWorkspaceIndex();
+  });
 
   // Left + high priority so Cursor's crowded right status bar cannot hide these.
   liveExplainStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 1000);
@@ -353,12 +461,13 @@ export function activate(context: vscode.ExtensionContext): void {
     );
     logCodegraph(`workspaceRequest=${request ? `${request.filePath}:${request.line}` : "(none)"}`);
     logCodegraph(`parser=${process.env.CODEGRAPH_PYTHON_PARSER ?? "(unset)"}`);
-    const folder = vscode.workspace.workspaceFolders?.[0];
+    const folder = folderForIndex();
     if (folder) {
       try {
         const result = await ensureWorkspaceIndex(folder.uri.fsPath);
+        await rememberIndexResult(result);
         logCodegraph(
-          `index files=${result.total} changed=${result.changed} unchanged=${result.unchanged} path=${result.storagePath}`
+          `index files=${result.total} changed=${result.changed} unchanged=${result.unchanged} skipped=${result.skipped} failed=${result.failed} ast=${result.parseAst} regex=${result.parseRegex} path=${result.storagePath}`
         );
       } catch (error) {
         logCodegraph(`index error=${error instanceof Error ? error.message : String(error)}`);
@@ -370,12 +479,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const expected = buildPointerAgentHandoffPrompt({
         ...request,
         depth: explainDepthSetting(),
-        neighborhoodLines: readNeighborhoodLines(
-          request.rootPath,
-          request.filePath,
-          request.line,
-          request.selectedText
-        )
+        neighborhoodLines: neighborhoodForRequest(request)
       });
       logCodegraph(`expectedHandoffChars=${expected.length}`);
       logCodegraph("--- expected slim prompt ---");
@@ -478,7 +582,7 @@ export function activate(context: vscode.ExtensionContext): void {
   });
 
   const rebuildIndexCommand = vscode.commands.registerCommand("codegraph.rebuildIndex", async () => {
-    const folder = vscode.workspace.workspaceFolders?.[0];
+    const folder = folderForIndex();
     if (!folder) {
       void vscode.window.showWarningMessage("Open a workspace folder to rebuild the Codegraph index.");
       return;
@@ -486,12 +590,13 @@ export function activate(context: vscode.ExtensionContext): void {
     logCodegraph("Rebuilding local Python index…", true);
     try {
       const result = await ensureWorkspaceIndex(folder.uri.fsPath, { force: true });
+      await rememberIndexResult(result);
       logCodegraph(
-        `Index rebuilt: files=${result.total} changed=${result.changed} removed=${result.removed} path=${result.storagePath}`,
+        `Index rebuilt: files=${result.total} changed=${result.changed} removed=${result.removed} skipped=${result.skipped} failed=${result.failed} path=${result.storagePath}`,
         true
       );
       void vscode.window.showInformationMessage(
-        `Codegraph indexed ${result.total} Python files (${result.changed} parsed).`
+        `Codegraph indexed ${result.total} Python files (${result.changed} parsed). Rebuild Local Index after upgrades that change the index schema.`
       );
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -509,7 +614,8 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
     const relative = vscode.workspace.asRelativePath(document.uri, false);
-    void reindexPaths(folder.uri.fsPath, [relative]).then((result: { total: number }) => {
+    void reindexPaths(folder.uri.fsPath, [relative]).then(async (result) => {
+      await rememberIndexResult(result);
       logCodegraph(`Index updated ${relative} (files=${result.total})`);
     });
   });
@@ -598,20 +704,32 @@ export function deactivate(): void {
   explainDepthStatusBar?.dispose();
   explainDepthStatusBar = undefined;
   extensionContext = undefined;
+  for (const watcher of indexWatchers.values()) {
+    watcher.close();
+  }
+  indexWatchers.clear();
+  for (const timer of indexReloadTimers.values()) {
+    clearTimeout(timer);
+  }
+  indexReloadTimers.clear();
 }
 
 async function warmWorkspaceIndex(): Promise<void> {
-  const folder = vscode.workspace.workspaceFolders?.[0];
-  if (!folder) {
-    return;
-  }
-  try {
-    const result = await ensureWorkspaceIndex(folder.uri.fsPath);
-    logCodegraph(
-      `Local index ready: ${result.total} Python files (${result.changed} parsed, ${result.unchanged} cached)`
-    );
-  } catch (error) {
-    logCodegraph(`Local index skipped: ${error instanceof Error ? error.message : String(error)}`);
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  const preferred = folderForIndex();
+  const ordered = preferred
+    ? [preferred, ...folders.filter((folder) => folder.uri.fsPath !== preferred.uri.fsPath)]
+    : folders;
+  for (const folder of ordered) {
+    try {
+      const result = await ensureWorkspaceIndex(folder.uri.fsPath);
+      await rememberIndexResult(result);
+      logCodegraph(
+        `Local index ready (${folder.name}): ${result.total} Python files (${result.changed} parsed, ${result.unchanged} cached)`
+      );
+    } catch (error) {
+      logCodegraph(`Local index skipped (${folder.name}): ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 }
 
@@ -674,13 +792,13 @@ function modelAccessConfig(): {
   const providerId = String(enrichment.get<string>("provider") ?? "openrouter");
   const preset = getEnrichmentProviderPreset(providerId);
   const apiKey =
-    enrichment.get<string>("apiKey")?.trim() ||
+    cachedApiKey?.trim() ||
     process.env.CODEGRAPH_API_KEY ||
     process.env.OPENAI_API_KEY;
   const legacyEnabled = Boolean(enrichment.get<boolean>("enabled"));
   const customBaseUrl = enrichment.get<string>("baseUrl")?.trim();
 
-  let useApiKeyProvider = Boolean(access.get<boolean>("useApiKeyProvider")) || legacyEnabled;
+  const useApiKeyProvider = Boolean(access.get<boolean>("useApiKeyProvider")) || legacyEnabled;
   let useBuiltInAgent = access.get<boolean>("useBuiltInAgent") !== false;
 
   // Prefer a single active LLM path: API key wins if explicitly enabled.
@@ -742,17 +860,21 @@ async function configureApiProvider(options?: { enableApiKeyMode?: boolean }): P
     customBaseUrl = entered.trim().replace(/\/$/, "");
   }
 
+  const existingKey = cachedApiKey?.trim();
   const apiKey = await vscode.window.showInputBox({
     title: `${preset.label} API key`,
-    prompt: "Stored in Codegraph settings (workspace). Only the key and model are required.",
+    prompt: existingKey
+      ? "Stored in VS Code Secret Storage. Leave empty to keep the current key."
+      : "Stored in VS Code Secret Storage (not workspace settings).",
     password: true,
-    value: enrichment.get<string>("apiKey") ?? "",
+    placeHolder: existingKey ? "Key is set — enter a new key to replace" : "Paste API key",
     ignoreFocusOut: true
   });
   if (apiKey === undefined) {
     return false;
   }
-  if (!apiKey.trim()) {
+  const resolvedKey = apiKey.trim() || existingKey;
+  if (!resolvedKey) {
     void vscode.window.showWarningMessage("API key is required for API key mode.");
     return false;
   }
@@ -789,8 +911,12 @@ async function configureApiProvider(options?: { enableApiKeyMode?: boolean }): P
   }
 
   const baseUrl = resolveEnrichmentBaseUrl(preset.id, customBaseUrl);
+  if (extensionContext) {
+    await extensionContext.secrets.store(API_KEY_SECRET, resolvedKey);
+  }
+  cachedApiKey = resolvedKey;
   await enrichment.update("provider", preset.id, vscode.ConfigurationTarget.Workspace);
-  await enrichment.update("apiKey", apiKey.trim(), vscode.ConfigurationTarget.Workspace);
+  await enrichment.update("apiKey", undefined, vscode.ConfigurationTarget.Workspace);
   await enrichment.update("model", model, vscode.ConfigurationTarget.Workspace);
   await enrichment.update("baseUrl", preset.id === "custom" ? baseUrl : "", vscode.ConfigurationTarget.Workspace);
   await enrichment.update("preferIdeHost", false, vscode.ConfigurationTarget.Workspace);
@@ -807,7 +933,7 @@ async function configureApiProvider(options?: { enableApiKeyMode?: boolean }): P
     async () =>
       testProviderConnection({
         providerId: preset.id,
-        apiKey: apiKey.trim(),
+        apiKey: resolvedKey,
         baseUrl,
         model
       })
@@ -864,7 +990,7 @@ async function runTestApiConnection(): Promise<void> {
 }
 
 async function runRepoBrief(options?: { force?: boolean }): Promise<void> {
-  const folder = vscode.workspace.workspaceFolders?.[0];
+  const folder = folderForIndex();
   if (!folder) {
     void vscode.window.showWarningMessage("Open a folder workspace to run a repo brief.");
     return;
@@ -1078,17 +1204,12 @@ async function enrichViaApiKey(deterministic: SelectionContext): Promise<Enriche
 
 async function enrichViaAgent(
   request: { rootPath: string; filePath: string; line: number; selectedText?: string },
-  options?: { handOff?: boolean; forceNewChat?: boolean }
+  options?: { handOff?: boolean; forceNewChat?: boolean; neighborhoodLines?: string[] }
 ): Promise<EnrichedSelectionContext> {
   const prompt = buildPointerAgentHandoffPrompt({
     ...request,
     depth: explainDepthSetting(),
-    neighborhoodLines: readNeighborhoodLines(
-      request.rootPath,
-      request.filePath,
-      request.line,
-      request.selectedText
-    )
+    neighborhoodLines: options?.neighborhoodLines ?? neighborhoodForRequest(request)
   });
   logCodegraph(`Agent prompt ${SLIM_HANDOFF_MARKER} chars=${prompt.length}`);
   logCodegraph(prompt);
@@ -1202,7 +1323,7 @@ async function gatherSourceWindowContext(
 async function enrichGroundedContext(
   request: { rootPath: string; filePath: string; line: number; selectedText?: string },
   grounded: SelectionContext,
-  options?: { live?: boolean; handOffAgent?: boolean }
+  options?: { live?: boolean; handOffAgent?: boolean; neighborhoodLines?: string[] }
 ): Promise<EnrichedSelectionContext> {
   const access = modelAccessConfig();
 
@@ -1233,7 +1354,8 @@ async function enrichGroundedContext(
 
     return enrichViaAgent(request, {
       handOff: shouldHandOff,
-      forceNewChat: !agentChatOpened
+      forceNewChat: !agentChatOpened,
+      neighborhoodLines: options?.neighborhoodLines
     });
   }
 
@@ -1286,8 +1408,9 @@ async function runExplainSelection(
   const agentMode = access.useBuiltInAgent && !access.useApiKeyProvider;
 
   const editor = vscode.window.activeTextEditor;
+  const neighborhoodLines = neighborhoodForRequest(request);
   if (live && editor) {
-    captureEditorState(editor, request);
+    captureEditorState(editor, request, undefined, neighborhoodLines);
   }
 
   // Agent mode: slim pointer only — answer lives in Agent chat (no Jump panel).
@@ -1295,7 +1418,8 @@ async function runExplainSelection(
     logCodegraph(`Agent mode explain for ${request.filePath}:${request.line} (live=${live})`, true);
     const result = await enrichGroundedContext(request, pointerContext(request), {
       live,
-      handOffAgent: options?.handOffAgent ?? true
+      handOffAgent: options?.handOffAgent ?? true,
+      neighborhoodLines
     });
     if (live && generation !== liveExplainGeneration) {
       logCodegraph(
@@ -1384,7 +1508,8 @@ function renderExplainPanel(
     : `${request.filePath}:${request.line}`;
   panel.title = options.live ? `Codegraph Live: ${label}` : `Codegraph: ${label}`;
   panel.webview.html = renderExplanationHtml(request.filePath, request.line, result, {
-    logoUri: extensionIconWebviewUri(panel.webview)
+    logoUri: extensionIconWebviewUri(panel.webview),
+    webview: panel.webview
   });
   panel.reveal(vscode.ViewColumn.Beside, true);
 
@@ -1469,7 +1594,7 @@ async function handlePanelMessage(message: unknown): Promise<void> {
         currentSession.request.filePath,
         currentSession.request.line,
         currentSession.result,
-        { logoUri: extensionIconWebviewUri(panel.webview) }
+        { logoUri: extensionIconWebviewUri(panel.webview), webview: panel.webview }
       );
     }
     return;
@@ -1488,7 +1613,7 @@ async function handlePanelMessage(message: unknown): Promise<void> {
   if (parsed.type === "setModelAccess") {
     const config = vscode.workspace.getConfiguration("codegraph.modelAccess");
     let useBuiltInAgent = Boolean(parsed.useBuiltInAgent);
-    let useApiKeyProvider = Boolean(parsed.useApiKeyProvider);
+    const useApiKeyProvider = Boolean(parsed.useApiKeyProvider);
 
     if (useApiKeyProvider && useBuiltInAgent) {
       useBuiltInAgent = false;
@@ -1637,7 +1762,7 @@ function renderExplanationHtml(
   filePath: string,
   line: number,
   result: EnrichedSelectionContext,
-  options?: { logoUri?: string }
+  options?: { logoUri?: string; webview?: vscode.Webview }
 ): string {
   const definition = result.explanation.sources.find((source) => source.kind === "definition") ?? result.explanation.sources[0];
   const endLineGuess =
@@ -1664,6 +1789,8 @@ function renderExplanationHtml(
     .join("\n");
   const resolution = `${result.metadata.source} · tier ${result.metadata.capabilityTier}`;
   const logoUri = options?.logoUri;
+  const nonce = randomBytes(16).toString("base64");
+  const cspSource = options?.webview?.cspSource ?? "https:";
   const depth = explainDepthSetting();
   const body = enriched
     ? `
@@ -1698,6 +1825,7 @@ function renderExplanationHtml(
     <head>
       <meta charset="UTF-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${cspSource} data:; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';" />
       <style>
         :root {
           --cg-teal: #2dd4bf;
@@ -1890,7 +2018,7 @@ function renderExplanationHtml(
         <button data-action="toggleLiveExplain">${liveExplainEnabled ? "turn off" : "turn on"}</button>
       </p>
 
-      <script>
+      <script nonce="${nonce}">
         const vscode = acquireVsCodeApi();
         document.querySelectorAll(".source-link").forEach((node) => {
           node.addEventListener("click", () => {

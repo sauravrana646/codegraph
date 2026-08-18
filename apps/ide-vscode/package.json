@@ -1,7 +1,7 @@
 {
   "name": "codegraph-ide-vscode",
   "displayName": "Codegraph",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "private": true,
   "publisher": "codegraph",
   "description": "Python-first codebase intelligence extension for VS Code and Cursor.",
@@ -182,7 +182,8 @@
         "codegraph.enrichment.apiKey": {
           "type": "string",
           "default": "",
-          "description": "API key for the selected enrichment provider."
+          "deprecationMessage": "Stored in Secret Storage. This setting is ignored after migration and should not be committed.",
+          "markdownDescription": "Deprecated. The API key is stored in VS Code Secret Storage, not workspace settings."
         },
         "codegraph.enrichment.model": {
           "type": "string",

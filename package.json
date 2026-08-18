@@ -11,13 +11,19 @@
     "build": "tsc -b",
     "clean": "npm run clean --workspaces --if-present",
     "typecheck": "tsc -b --pretty false",
-    "lint": "npm run lint --workspaces --if-present",
+    "lint": "eslint . --ext .ts",
+    "test": "tsc -b && node --test --test-reporter spec packages/*/dist/*.test.js",
     "package:skill": "bash skills/codegraph/scripts/package-skill.sh",
     "package:extension": "npm run build && mkdir -p artifacts && npm run package --workspace codegraph-ide-vscode",
     "install:skill": "bash skills/codegraph/scripts/install-skill.sh"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",
+    "@typescript-eslint/eslint-plugin": "^8.32.1",
+    "@typescript-eslint/parser": "^8.32.1",
+    "eslint": "^8.57.1",
+    "eslint-config-prettier": "^10.1.5",
+    "prettier": "^3.6.2",
     "typescript": "^5.9.2"
   },
   "engines": {

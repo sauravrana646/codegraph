@@ -50,6 +50,14 @@ Typecheck all workspaces:
 npm run typecheck
 ```
 
+Run unit tests (`node --test` on compiled `*.test.js`):
+
+```bash
+npm test
+```
+
+After pulling an index-schema change (v3+), run **Codegraph: Rebuild Local Index** in the IDE.
+
 ## Run the runtime prototype
 
 The runtime exposes a local CLI that:
@@ -85,7 +93,12 @@ Start the server:
 npm run serve --workspace @codegraph/runtime -- 4311
 ```
 
-Security hardening (recommended for any shared machine):
+Security (fail-closed defaults):
+
+- If `CODEGRAPH_RUNTIME_TOKEN` is unset, the server **generates** a token, prints it once, and requires `Authorization: Bearer <token>`.
+- Set `CODEGRAPH_ALLOW_ANONYMOUS=1` only for explicitly insecure local scripting.
+- If `CODEGRAPH_ALLOWED_ROOTS` is unset, the allowlist defaults to `process.cwd()`. Requests whose `rootPath` is outside that root are rejected.
+- POST routes reject `Origin`, require `Host` `127.0.0.1` / `localhost` / `[::1]`, and `Content-Type: application/json`.
 
 ```bash
 export CODEGRAPH_RUNTIME_TOKEN="long-random-token"

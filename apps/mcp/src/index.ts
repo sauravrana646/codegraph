@@ -64,19 +64,17 @@ type RegisterTool = (
   handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ type: "text"; text: string }> }>
 ) => void;
 
-const ALLOWED_ROOTS = (process.env.CODEGRAPH_ALLOWED_ROOTS ?? "")
-  .split(path.delimiter)
-  .map((value) => value.trim())
-  .filter(Boolean)
-  .map((value) => path.resolve(value));
+const ALLOWED_ROOTS = (() => {
+  const configured = (process.env.CODEGRAPH_ALLOWED_ROOTS ?? "")
+    .split(path.delimiter)
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((value) => path.resolve(value));
+  return configured.length > 0 ? configured : [path.resolve(process.cwd())];
+})();
 
 function assertAllowedRoot(rootPath: string): string {
   const resolved = path.resolve(rootPath);
-
-  if (ALLOWED_ROOTS.length === 0) {
-    return resolved;
-  }
-
   const allowed = ALLOWED_ROOTS.some((root) => resolved === root || resolved.startsWith(`${root}${path.sep}`));
   if (!allowed) {
     throw new Error("rootPath is not in CODEGRAPH_ALLOWED_ROOTS");
@@ -233,6 +231,7 @@ async function main(): Promise<void> {
   );
 
   const transport = new StdioServerTransport();
+  console.error(`Codegraph MCP allowed roots: ${ALLOWED_ROOTS.join(", ")}`);
   await server.connect(transport);
 }
 

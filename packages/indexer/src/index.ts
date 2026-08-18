@@ -4,12 +4,19 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { parsePythonFile, type PythonAstImport, type PythonAstSymbol } from "@codegraph/language-intelligence";
-import { readContainedFile } from "@codegraph/security";
+import { parsePythonFile, pythonParserUnavailable, type PythonAstImport, type PythonAstSymbol } from "@codegraph/language-intelligence";
+import { FileTooLargeError, readContainedFile, redactSecrets } from "@codegraph/security";
 import { createWorkspaceId } from "@codegraph/workspace";
 
 import { attachCallGraph, neighborhoodLinesForPointer, resolvePythonModuleFiles } from "./graph";
-import { INDEX_VERSION, type IndexedFile, type IndexedImport, type IndexedSymbol, type WorkspaceIndex } from "./types";
+import {
+  INDEX_VERSION,
+  type IndexedFile,
+  type IndexedImport,
+  type IndexedSymbol,
+  type ParseSource,
+  type WorkspaceIndex
+} from "./types";
 
 export { INDEX_VERSION } from "./types";
 export type {
@@ -19,11 +26,13 @@ export type {
   IndexedFile,
   IndexedImport,
   IndexedSymbol,
+  ParseSource,
   SymbolNeighborhood,
   WorkspaceIndex
 } from "./types";
 export {
   attachCallGraph,
+  displaySymbolName,
   findIndexedDefinitions,
   formatNeighborhoodLines,
   lookupNeighborhood,
@@ -57,17 +66,36 @@ const SKIP_DIRS = new Set([
   ".idea"
 ]);
 
+const indexMemoryCache = new Map<string, WorkspaceIndex>();
+
 export interface IndexUpdateResult {
   index: WorkspaceIndex;
   changed: number;
   removed: number;
   unchanged: number;
   total: number;
+  skipped: number;
+  failed: number;
+  parseAst: number;
+  parseRegex: number;
+  astUnavailable: boolean;
   storagePath: string;
 }
 
 function normalizeRel(file: string): string {
   return file.replace(/\\/g, "/");
+}
+
+function cacheKey(rootPath: string): string {
+  return path.resolve(rootPath);
+}
+
+export function getCachedWorkspaceIndex(rootPath: string): WorkspaceIndex | undefined {
+  return indexMemoryCache.get(cacheKey(rootPath));
+}
+
+export function setCachedWorkspaceIndex(rootPath: string, index: WorkspaceIndex): void {
+  indexMemoryCache.set(cacheKey(rootPath), index);
 }
 
 export function indexStorageDir(rootPath: string): string {
@@ -84,13 +112,8 @@ async function walkPythonFiles(rootPath: string, currentDir = rootPath): Promise
   const files: string[] = [];
 
   for (const entry of entries) {
-    if (SKIP_DIRS.has(entry.name) || entry.name.startsWith(".")) {
-      if (entry.name !== "." && entry.isDirectory() && SKIP_DIRS.has(entry.name)) {
-        continue;
-      }
-      if (entry.isDirectory() && (SKIP_DIRS.has(entry.name) || entry.name.startsWith("."))) {
-        continue;
-      }
+    if (entry.isDirectory() && (SKIP_DIRS.has(entry.name) || entry.name.startsWith("."))) {
+      continue;
     }
 
     if (entry.isSymbolicLink()) {
@@ -123,11 +146,16 @@ function toIndexedSymbols(symbols: PythonAstSymbol[]): IndexedSymbol[] {
     endLine: symbol.endLine,
     bases: symbol.bases ?? [],
     members: (symbol.members ?? []).map((member) => member.name),
-    signature: symbol.signature,
-    docstring: symbol.docstring ?? undefined,
+    parentName: symbol.parentName ?? undefined,
+    signature: symbol.signature ? redactSecrets(symbol.signature) : undefined,
+    docstring: symbol.docstring ? redactSecrets(symbol.docstring) : undefined,
     calls: (symbol.calls ?? [])
       .filter((call) => call.name && call.line)
-      .map((call) => ({ name: call.name, line: call.line })),
+      .map((call) => ({
+        name: call.name,
+        line: call.line,
+        ...(call.receiver ? { receiver: call.receiver } : {})
+      })),
     callees: [],
     callers: []
   }));
@@ -151,19 +179,35 @@ function parseIndexPayload(raw: string, rootPath: string): WorkspaceIndex | unde
   return parsed;
 }
 
+function rememberIndex(index: WorkspaceIndex): void {
+  setCachedWorkspaceIndex(index.rootPath, index);
+}
+
 async function loadIndex(storagePath: string, rootPath: string): Promise<WorkspaceIndex | undefined> {
   try {
     const raw = await fsp.readFile(storagePath, "utf8");
-    return parseIndexPayload(raw, rootPath);
+    const parsed = parseIndexPayload(raw, rootPath);
+    if (parsed) {
+      rememberIndex(parsed);
+    }
+    return parsed;
   } catch {
     return undefined;
   }
 }
 
 export function readWorkspaceIndexSync(rootPath: string): WorkspaceIndex | undefined {
+  const cached = getCachedWorkspaceIndex(rootPath);
+  if (cached) {
+    return cached;
+  }
   try {
     const raw = fs.readFileSync(indexStoragePath(rootPath), "utf8");
-    return parseIndexPayload(raw, rootPath);
+    const parsed = parseIndexPayload(raw, rootPath);
+    if (parsed) {
+      rememberIndex(parsed);
+    }
+    return parsed;
   } catch {
     return undefined;
   }
@@ -171,30 +215,40 @@ export function readWorkspaceIndexSync(rootPath: string): WorkspaceIndex | undef
 
 async function saveIndex(storagePath: string, index: WorkspaceIndex): Promise<void> {
   attachCallGraph(index);
+  rememberIndex(index);
   await fsp.mkdir(path.dirname(storagePath), { recursive: true });
   const tmp = `${storagePath}.tmp`;
   await fsp.writeFile(tmp, `${JSON.stringify(index)}\n`, "utf8");
   await fsp.rename(tmp, storagePath);
 }
 
-async function indexOneFile(rootPath: string, relativePath: string): Promise<IndexedFile | undefined> {
+type IndexFileOutcome =
+  | { status: "ok"; file: IndexedFile }
+  | { status: "skipped" }
+  | { status: "failed" };
+
+async function indexOneFile(rootPath: string, relativePath: string): Promise<IndexFileOutcome> {
   try {
-    const contained = await readContainedFile(rootPath, relativePath);
+    const contained = await readContainedFile(rootPath, relativePath, { maxBytes: MAX_INDEX_FILE_BYTES });
     const stat = await fsp.stat(contained.absolutePath);
-    if (stat.size > MAX_INDEX_FILE_BYTES) {
-      return undefined;
-    }
     const parsed = await parsePythonFile(contained.absolutePath, contained.content);
     return {
-      relativePath: normalizeRel(contained.relativePath),
-      contentHash: hashContent(contained.content),
-      mtimeMs: stat.mtimeMs,
-      size: stat.size,
-      symbols: toIndexedSymbols(parsed.symbols),
-      imports: toIndexedImports(parsed.imports)
+      status: "ok",
+      file: {
+        relativePath: normalizeRel(contained.relativePath),
+        contentHash: hashContent(contained.content),
+        mtimeMs: stat.mtimeMs,
+        size: stat.size,
+        parseSource: parsed.source,
+        symbols: toIndexedSymbols(parsed.symbols),
+        imports: toIndexedImports(parsed.imports)
+      }
     };
-  } catch {
-    return undefined;
+  } catch (error) {
+    if (error instanceof FileTooLargeError) {
+      return { status: "skipped" };
+    }
+    return { status: "failed" };
   }
 }
 
@@ -219,6 +273,41 @@ async function mapPool<T, R>(items: T[], limit: number, mapper: (item: T) => Pro
   return results;
 }
 
+function parseCounts(files: Record<string, IndexedFile>): { parseAst: number; parseRegex: number } {
+  let parseAst = 0;
+  let parseRegex = 0;
+  for (const file of Object.values(files)) {
+    const source: ParseSource = file.parseSource ?? "python_ast";
+    if (source === "regex_fallback") {
+      parseRegex += 1;
+    } else {
+      parseAst += 1;
+    }
+  }
+  return { parseAst, parseRegex };
+}
+
+function toUpdateResult(
+  index: WorkspaceIndex,
+  storagePath: string,
+  counts: { changed: number; removed: number; unchanged: number; skipped: number; failed: number }
+): IndexUpdateResult {
+  const parsed = parseCounts(index.files);
+  return {
+    index,
+    changed: counts.changed,
+    removed: counts.removed,
+    unchanged: counts.unchanged,
+    total: Object.keys(index.files).length,
+    skipped: counts.skipped,
+    failed: counts.failed,
+    parseAst: parsed.parseAst,
+    parseRegex: parsed.parseRegex,
+    astUnavailable: pythonParserUnavailable(),
+    storagePath
+  };
+}
+
 export async function ensureWorkspaceIndex(
   rootPath: string,
   options?: { force?: boolean }
@@ -226,11 +315,15 @@ export async function ensureWorkspaceIndex(
   const resolved = path.resolve(rootPath);
   const storagePath = indexStoragePath(resolved);
   const previous = options?.force ? undefined : await loadIndex(storagePath, resolved);
-  const listed = (await walkPythonFiles(resolved)).slice(0, MAX_INDEXED_PYTHON_FILES);
+  const allListed = await walkPythonFiles(resolved);
+  const truncated = Math.max(0, allListed.length - MAX_INDEXED_PYTHON_FILES);
+  const listed = allListed.slice(0, MAX_INDEXED_PYTHON_FILES);
   const files: Record<string, IndexedFile> = {};
   const stale = previous?.files ?? {};
   const toParse: string[] = [];
   let unchanged = 0;
+  let skipped = truncated;
+  let failed = 0;
 
   for (const relativePath of listed) {
     const existing = stale[relativePath];
@@ -239,7 +332,7 @@ export async function ensureWorkspaceIndex(
       continue;
     }
     try {
-      const contained = await readContainedFile(resolved, relativePath);
+      const contained = await readContainedFile(resolved, relativePath, { maxBytes: MAX_INDEX_FILE_BYTES });
       const stat = await fsp.stat(contained.absolutePath);
       const hash = hashContent(contained.content);
       if (existing.contentHash === hash && Math.abs(existing.mtimeMs - stat.mtimeMs) < 2) {
@@ -247,7 +340,11 @@ export async function ensureWorkspaceIndex(
         unchanged += 1;
         continue;
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof FileTooLargeError) {
+        skipped += 1;
+        continue;
+      }
       // fall through to reparse
     }
     toParse.push(relativePath);
@@ -256,11 +353,16 @@ export async function ensureWorkspaceIndex(
   const parsed = await mapPool(toParse, 6, (file) => indexOneFile(resolved, file));
   let changed = 0;
   for (const item of parsed) {
-    if (!item) {
+    if (item.status === "ok") {
+      files[item.file.relativePath] = item.file;
+      changed += 1;
       continue;
     }
-    files[item.relativePath] = item;
-    changed += 1;
+    if (item.status === "skipped") {
+      skipped += 1;
+      continue;
+    }
+    failed += 1;
   }
 
   const removed = Object.keys(stale).filter((file) => !files[file]).length;
@@ -272,14 +374,7 @@ export async function ensureWorkspaceIndex(
     files
   };
   await saveIndex(storagePath, index);
-  return {
-    index,
-    changed,
-    removed,
-    unchanged,
-    total: Object.keys(files).length,
-    storagePath
-  };
+  return toUpdateResult(index, storagePath, { changed, removed, unchanged, skipped, failed });
 }
 
 export async function reindexPaths(rootPath: string, relativePaths: string[]): Promise<IndexUpdateResult> {
@@ -298,6 +393,8 @@ export async function reindexPaths(rootPath: string, relativePaths: string[]): P
   const files = { ...previous.files };
   let changed = 0;
   let removed = 0;
+  let skipped = 0;
+  let failed = 0;
 
   for (const raw of relativePaths) {
     const relativePath = normalizeRel(raw);
@@ -305,14 +402,19 @@ export async function reindexPaths(rootPath: string, relativePaths: string[]): P
       continue;
     }
     const indexed = await indexOneFile(resolved, relativePath);
-    if (!indexed) {
+    if (indexed.status !== "ok") {
       if (files[relativePath]) {
         delete files[relativePath];
         removed += 1;
       }
+      if (indexed.status === "skipped") {
+        skipped += 1;
+      } else {
+        failed += 1;
+      }
       continue;
     }
-    files[relativePath] = indexed;
+    files[relativePath] = indexed.file;
     changed += 1;
   }
 
@@ -322,14 +424,13 @@ export async function reindexPaths(rootPath: string, relativePaths: string[]): P
     updatedAt: Date.now()
   };
   await saveIndex(storagePath, index);
-  return {
-    index,
+  return toUpdateResult(index, storagePath, {
     changed,
     removed,
     unchanged: Object.keys(files).length - changed,
-    total: Object.keys(files).length,
-    storagePath
-  };
+    skipped,
+    failed
+  });
 }
 
 export async function readWorkspaceIndex(rootPath: string): Promise<WorkspaceIndex | undefined> {
@@ -342,7 +443,7 @@ export function readNeighborhoodLines(
   line: number,
   selectedText?: string
 ): string[] {
-  return neighborhoodLinesForPointer(readWorkspaceIndexSync(rootPath), filePath, line, selectedText);
+  return neighborhoodLinesForPointer(getCachedWorkspaceIndex(rootPath), filePath, line, selectedText);
 }
 
 export function listIndexedFiles(index: WorkspaceIndex): IndexedFile[] {

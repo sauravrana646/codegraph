@@ -1,6 +1,7 @@
-export const INDEX_VERSION = 2;
+export const INDEX_VERSION = 3;
 
 export type CallResolveVia = "same-file" | "import" | "unique-name";
+export type ParseSource = "python_ast" | "regex_fallback";
 
 export interface GraphEdge {
   file: string;
@@ -22,6 +23,7 @@ export interface IndexedImport {
 export interface IndexedCallSite {
   name: string;
   line: number;
+  receiver?: string;
 }
 
 export interface IndexedSymbol {
@@ -31,6 +33,7 @@ export interface IndexedSymbol {
   endLine: number;
   bases: string[];
   members: string[];
+  parentName?: string;
   signature?: string;
   docstring?: string;
   calls: IndexedCallSite[];
@@ -43,6 +46,7 @@ export interface IndexedFile {
   contentHash: string;
   mtimeMs: number;
   size: number;
+  parseSource: ParseSource;
   symbols: IndexedSymbol[];
   imports: IndexedImport[];
 }

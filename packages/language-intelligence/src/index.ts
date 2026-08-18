@@ -12,6 +12,7 @@ export type PythonAstMemberKind = "field" | "method";
 export interface PythonCallSite {
   name: string;
   line: number;
+  receiver?: string;
 }
 
 export interface PythonAstMember {
@@ -39,6 +40,7 @@ export interface PythonAstSymbol {
   members?: PythonAstMember[];
   signature?: string;
   calls?: PythonCallSite[];
+  parentName?: string | null;
 }
 
 export interface PythonAstImport {
@@ -173,12 +175,57 @@ function regexImports(content: string): PythonAstImport[] {
   return imports;
 }
 
+const PYTHON_LAUNCHERS = ["python3", "python", "py"];
+const PARSER_MAX_BUFFER = 16 * 1024 * 1024;
+
+let cachedPythonLauncher: string | undefined;
+let pythonLauncherUnavailable = false;
+let lastParserFailure: string | undefined;
+
+export function pythonParserUnavailable(): boolean {
+  return pythonLauncherUnavailable;
+}
+
+export function consumePythonParserFailure(): string | undefined {
+  const message = lastParserFailure;
+  lastParserFailure = undefined;
+  return message;
+}
+
+async function resolvePythonLauncher(): Promise<string | undefined> {
+  if (cachedPythonLauncher) {
+    return cachedPythonLauncher;
+  }
+  if (pythonLauncherUnavailable) {
+    return undefined;
+  }
+
+  for (const command of PYTHON_LAUNCHERS) {
+    try {
+      await execFileAsync(command, ["-c", "import ast"], { timeout: 8000 });
+      cachedPythonLauncher = command;
+      return command;
+    } catch {
+      // try next launcher
+    }
+  }
+
+  pythonLauncherUnavailable = true;
+  lastParserFailure = "No Python launcher found (tried python3, python, py)";
+  return undefined;
+}
+
 export async function parsePythonFile(filePath: string, content?: string): Promise<PythonAstParseResult> {
   const fileContent = content ?? (await fs.readFile(filePath, "utf8"));
+  const launcher = await resolvePythonLauncher();
+
+  if (!launcher) {
+    return regexFallback(fileContent);
+  }
 
   try {
-    const { stdout } = await execFileAsync("python3", [resolveParserScriptPath(), filePath], {
-      maxBuffer: 1024 * 1024
+    const { stdout } = await execFileAsync(launcher, [resolveParserScriptPath(), filePath], {
+      maxBuffer: PARSER_MAX_BUFFER
     });
     const parsed = JSON.parse(stdout) as PythonParserJson;
 
@@ -187,7 +234,12 @@ export async function parsePythonFile(filePath: string, content?: string): Promi
       imports: parsed.imports ?? [],
       source: "python_ast"
     };
-  } catch {
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    lastParserFailure = detail;
+    if (/maxBuffer/i.test(detail)) {
+      console.error(`Codegraph parser maxBuffer exceeded for ${filePath}: ${detail}`);
+    }
     return regexFallback(fileContent);
   }
 }

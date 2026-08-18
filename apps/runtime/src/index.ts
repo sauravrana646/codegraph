@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import http from "node:http";
 import path from "node:path";
 
@@ -19,7 +19,7 @@ import {
 } from "@codegraph/agent-tools";
 import { toolError, type LogicalSectionDepth, type ToolEnvelope, type ToolName } from "@codegraph/protocol";
 
-interface RuntimeRequestBody extends ToolRequest {}
+type RuntimeRequestBody = ToolRequest;
 
 type SessionAction = NamedToolAction;
 
@@ -41,12 +41,45 @@ const MAX_SESSIONS = 100;
 const MAX_BODY_BYTES = 1_000_000;
 const sessions = new Map<string, RuntimeSession>();
 
-const AUTH_TOKEN = process.env.CODEGRAPH_RUNTIME_TOKEN?.trim() || undefined;
-const ALLOWED_ROOTS = (process.env.CODEGRAPH_ALLOWED_ROOTS ?? "")
-  .split(path.delimiter)
-  .map((value) => value.trim())
-  .filter(Boolean)
-  .map((value) => path.resolve(value));
+function envFlag(name: string): boolean {
+  const value = process.env[name]?.trim().toLowerCase();
+  return value === "1" || value === "true";
+}
+
+function parseAllowedRoots(): string[] {
+  const configured = (process.env.CODEGRAPH_ALLOWED_ROOTS ?? "")
+    .split(path.delimiter)
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((value) => path.resolve(value));
+  if (configured.length > 0) {
+    return configured;
+  }
+  return [path.resolve(process.cwd())];
+}
+
+let AUTH_TOKEN: string | undefined;
+let ALLOW_ANONYMOUS = false;
+let GENERATED_TOKEN = false;
+const ALLOWED_ROOTS = parseAllowedRoots();
+
+function initRuntimeSecurity(): void {
+  ALLOW_ANONYMOUS = envFlag("CODEGRAPH_ALLOW_ANONYMOUS");
+  const fromEnv = process.env.CODEGRAPH_RUNTIME_TOKEN?.trim();
+  if (fromEnv) {
+    AUTH_TOKEN = fromEnv;
+    GENERATED_TOKEN = false;
+    return;
+  }
+  if (ALLOW_ANONYMOUS) {
+    AUTH_TOKEN = undefined;
+    GENERATED_TOKEN = false;
+    return;
+  }
+  AUTH_TOKEN = randomBytes(32).toString("hex");
+  process.env.CODEGRAPH_RUNTIME_TOKEN = AUTH_TOKEN;
+  GENERATED_TOKEN = true;
+}
 
 function isLogicalSectionDepth(value: unknown): value is LogicalSectionDepth {
   return value === "statement" || value === "function" || value === "class" || value === "auto";
@@ -116,8 +149,9 @@ function printUsage(): void {
       "  codegraph-runtime serve [port]",
       "",
       "Security env:",
-      "  CODEGRAPH_RUNTIME_TOKEN   Optional bearer token required for HTTP API",
-      "  CODEGRAPH_ALLOWED_ROOTS   Optional path-delimiter list of allowed workspace roots"
+      "  CODEGRAPH_RUNTIME_TOKEN     Bearer token required for HTTP API (auto-generated if unset)",
+      "  CODEGRAPH_ALLOW_ANONYMOUS   Set to 1 to allow unauthenticated HTTP (insecure)",
+      "  CODEGRAPH_ALLOWED_ROOTS     Path-delimiter list of allowed workspace roots (default: cwd)"
     ].join("\n")
   );
 }
@@ -134,8 +168,12 @@ function tokensEqual(left: string, right: string): boolean {
 }
 
 function isAuthorized(request: http.IncomingMessage): boolean {
-  if (!AUTH_TOKEN) {
+  if (ALLOW_ANONYMOUS && !AUTH_TOKEN) {
     return true;
+  }
+
+  if (!AUTH_TOKEN) {
+    return false;
   }
 
   const header = request.headers.authorization;
@@ -153,11 +191,6 @@ function isAuthorized(request: http.IncomingMessage): boolean {
 
 function assertAllowedRoot(rootPath: string): string {
   const resolved = path.resolve(rootPath);
-
-  if (ALLOWED_ROOTS.length === 0) {
-    return resolved;
-  }
-
   const allowed = ALLOWED_ROOTS.some((root) => resolved === root || resolved.startsWith(`${root}${path.sep}`));
 
   if (!allowed) {
@@ -165,6 +198,39 @@ function assertAllowedRoot(rootPath: string): string {
   }
 
   return resolved;
+}
+
+function isSafeLocalHostHeader(host: string | undefined): boolean {
+  if (!host) {
+    return false;
+  }
+  return /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(host);
+}
+
+class HttpGuardError extends Error {
+  readonly statusCode: number;
+
+  constructor(statusCode: number, message: string) {
+    super(message);
+    this.statusCode = statusCode;
+    this.name = "HttpGuardError";
+  }
+}
+
+function assertHttpRequestGuards(request: http.IncomingMessage, options?: { requireJson?: boolean }): void {
+  if (!isSafeLocalHostHeader(typeof request.headers.host === "string" ? request.headers.host : undefined)) {
+    throw new HttpGuardError(400, "Invalid Host header");
+  }
+
+  if (options?.requireJson) {
+    if (typeof request.headers.origin === "string" && request.headers.origin.trim()) {
+      throw new HttpGuardError(403, "Origin header is not allowed");
+    }
+    const contentType = request.headers["content-type"];
+    if (typeof contentType !== "string" || !contentType.toLowerCase().startsWith("application/json")) {
+      throw new HttpGuardError(415, "Content-Type must be application/json");
+    }
+  }
 }
 
 function sanitizeRemoteRequest(request: RuntimeRequestBody): RuntimeRequestBody {
@@ -294,18 +360,21 @@ async function handleToolRequest(
     pruneExpiredSessions();
 
     if (request.method === "GET" && request.url === "/health") {
+      assertHttpRequestGuards(request);
       writeJson(response, 200, {
         ok: true,
         tool: "health",
         data: {
           service: "codegraph-runtime",
           activeSessions: sessions.size,
-          authRequired: Boolean(AUTH_TOKEN),
+          authRequired: Boolean(AUTH_TOKEN) && !ALLOW_ANONYMOUS,
           allowedRootsConfigured: ALLOWED_ROOTS.length > 0
         }
       });
       return;
     }
+
+    assertHttpRequestGuards(request, { requireJson: request.method === "POST" });
 
     if (!isAuthorized(request)) {
       writeJson(response, 401, toolError("unauthorized", "Missing or invalid runtime token"));
@@ -448,6 +517,10 @@ async function handleToolRequest(
 
     writeJson(response, 404, toolError("unknown_endpoint", "Unknown endpoint"));
   } catch (error) {
+    if (error instanceof HttpGuardError) {
+      writeJson(response, error.statusCode, toolError("invalid_request", error.message));
+      return;
+    }
     const message = error instanceof Error ? error.message : "Unknown runtime error";
     const status =
       message.includes("CODEGRAPH_ALLOWED_ROOTS") ||
@@ -512,17 +585,18 @@ async function runServerCommand(args: string[]): Promise<void> {
   });
 
   console.log(`Codegraph runtime listening on http://127.0.0.1:${port}`);
-  if (AUTH_TOKEN) {
-    console.log("Runtime token auth enabled (CODEGRAPH_RUNTIME_TOKEN)");
+  console.log(`Allowed roots: ${ALLOWED_ROOTS.join(", ")}`);
+  if (ALLOW_ANONYMOUS && !AUTH_TOKEN) {
+    console.log("Warning: CODEGRAPH_ALLOW_ANONYMOUS=1; local HTTP API is unauthenticated");
+  } else if (GENERATED_TOKEN && AUTH_TOKEN) {
+    console.log(`Runtime token (CODEGRAPH_RUNTIME_TOKEN): ${AUTH_TOKEN}`);
   } else {
-    console.log("Warning: CODEGRAPH_RUNTIME_TOKEN is unset; local HTTP API is unauthenticated");
-  }
-  if (ALLOWED_ROOTS.length > 0) {
-    console.log(`Allowed roots: ${ALLOWED_ROOTS.join(", ")}`);
+    console.log("Runtime token auth enabled (CODEGRAPH_RUNTIME_TOKEN)");
   }
 }
 
 async function main(): Promise<void> {
+  initRuntimeSecurity();
   const [, , firstArg, ...rest] = process.argv;
 
   if (!firstArg || firstArg === "explain") {

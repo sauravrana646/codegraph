@@ -4,7 +4,7 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 
 import { buildPointerAgentHandoffPrompt, type ExplainDepth } from "@codegraph/model-gateway";
-import { readNeighborhoodLines } from "@codegraph/core";
+import { redactSecrets } from "@codegraph/security";
 
 export interface LiveCursorState {
   path: string;
@@ -20,6 +20,8 @@ export interface LiveCursorState {
   iso: string;
 }
 
+const WAKE_LOG_MAX_BYTES = 256 * 1024;
+
 function homeCursorDir(...parts: string[]): string {
   return path.join(os.homedir(), ".cursor", ...parts);
 }
@@ -33,14 +35,19 @@ export function learnCodebaseRuntimeDir(): string {
 }
 
 function ensureDir(dir: string): void {
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    fs.chmodSync(dir, 0o700);
+  } catch {
+    // ignore platforms that cannot chmod
+  }
 }
 
 function writeEnabled(dir: string, enabled: boolean): void {
   ensureDir(dir);
   const enabledPath = path.join(dir, "enabled");
   if (enabled) {
-    fs.writeFileSync(enabledPath, "1\n", "utf8");
+    fs.writeFileSync(enabledPath, "1\n", { encoding: "utf8", mode: 0o600 });
   } else if (fs.existsSync(enabledPath)) {
     fs.unlinkSync(enabledPath);
   }
@@ -48,24 +55,45 @@ function writeEnabled(dir: string, enabled: boolean): void {
 
 function writeState(dir: string, state: LiveCursorState): void {
   ensureDir(dir);
-  fs.writeFileSync(path.join(dir, "state.json"), `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  fs.writeFileSync(path.join(dir, "state.json"), `${JSON.stringify(state, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600
+  });
+}
+
+function rotateWakeLog(logPath: string): void {
+  try {
+    const stat = fs.statSync(logPath);
+    if (stat.size <= WAKE_LOG_MAX_BYTES) {
+      return;
+    }
+    const rotated = `${logPath}.1`;
+    try {
+      fs.unlinkSync(rotated);
+    } catch {
+      // ignore
+    }
+    fs.renameSync(logPath, rotated);
+  } catch {
+    // missing log is fine
+  }
 }
 
 function appendWake(dir: string, state: LiveCursorState): void {
   ensureDir(dir);
+  const logPath = path.join(dir, "wake.log");
+  rotateWakeLog(logPath);
   const line = [
     state.iso,
     state.absolutePath,
     String(state.line),
     state.selection.replace(/\s+/g, " ").slice(0, 120)
   ].join("\t");
-  fs.appendFileSync(path.join(dir, "wake.log"), `${line}\n`, "utf8");
+  fs.appendFileSync(logPath, `${line}\n`, { encoding: "utf8", mode: 0o600 });
 }
 
-function writePendingPrompt(dir: string, state: LiveCursorState): void {
+function writePendingPrompt(dir: string, state: LiveCursorState, neighborhoodLines: string[]): void {
   ensureDir(dir);
-  // Slim pointer only — Agent reads source (no AST/LSP dumps).
-  // Must include depth answer format (especially Deep: example + why-not-simpler).
   const depthRaw =
     vscode.workspace.getConfiguration("codegraph.explain").get<string>("depth") ?? "standard";
   const depth: ExplainDepth =
@@ -76,14 +104,9 @@ function writePendingPrompt(dir: string, state: LiveCursorState): void {
     line: state.line,
     selectedText: state.selection || state.selectedText,
     depth,
-    neighborhoodLines: readNeighborhoodLines(
-      state.rootPath,
-      state.filePath,
-      state.line,
-      state.selection || state.selectedText
-    )
+    neighborhoodLines
   });
-  fs.writeFileSync(path.join(dir, "pending-prompt.md"), `${prompt}\n`, "utf8");
+  fs.writeFileSync(path.join(dir, "pending-prompt.md"), `${prompt}\n`, { encoding: "utf8", mode: 0o600 });
 }
 
 export function liveBridgeConfig(): { writeBridge: boolean; compatLearnCodebase: boolean } {
@@ -97,7 +120,6 @@ export function liveBridgeConfig(): { writeBridge: boolean; compatLearnCodebase:
 export function setLiveBridgeEnabled(enabled: boolean): void {
   const { writeBridge, compatLearnCodebase } = liveBridgeConfig();
   if (!writeBridge) {
-    // Still clear markers if disabling.
     if (!enabled) {
       try {
         writeEnabled(codegraphRuntimeDir(), false);
@@ -129,6 +151,7 @@ export function publishLiveCursorState(input: {
   column: number;
   selectedText?: string;
   languageId: string;
+  neighborhoodLines?: string[];
   grounded?: {
     summary?: string;
     whatItDoes?: string;
@@ -143,7 +166,8 @@ export function publishLiveCursorState(input: {
     return undefined;
   }
 
-  const selection = (input.selectedText ?? "").trim();
+  const selection = redactSecrets((input.selectedText ?? "").trim());
+  const neighborhoodLines = input.neighborhoodLines ?? [];
   const state: LiveCursorState = {
     path: input.absolutePath,
     absolutePath: input.absolutePath,
@@ -167,7 +191,7 @@ export function publishLiveCursorState(input: {
     for (const dir of dirs) {
       writeState(dir, state);
       appendWake(dir, state);
-      writePendingPrompt(dir, state);
+      writePendingPrompt(dir, state, neighborhoodLines);
     }
 
     return state;
@@ -187,7 +211,8 @@ export function captureEditorState(
     howItWorks?: string;
     codebaseUsage?: string;
     sources?: string[];
-  }
+  },
+  neighborhoodLines?: string[]
 ): void {
   publishLiveCursorState({
     rootPath: request.rootPath,
@@ -197,6 +222,7 @@ export function captureEditorState(
     column: editor.selection.active.character,
     selectedText: request.selectedText,
     languageId: editor.document.languageId,
+    neighborhoodLines,
     grounded
   });
 }

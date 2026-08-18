@@ -24,18 +24,22 @@ def _decorator_names(node: ast.AST) -> list[str]:
 
 
 def _unique_calls(items: list[dict]) -> list[dict]:
-    seen: set[tuple[str, int]] = set()
+    seen: set[tuple[str, int, str]] = set()
     out: list[dict] = []
     for item in items:
         name = item.get("name")
         line = item.get("line")
         if not name or not isinstance(line, int):
             continue
-        key = (name, line)
+        receiver = item.get("receiver") if isinstance(item.get("receiver"), str) else None
+        key = (name, line, receiver or "")
         if key in seen:
             continue
         seen.add(key)
-        out.append({"name": name, "line": line})
+        payload = {"name": name, "line": line}
+        if receiver:
+            payload["receiver"] = receiver
+        out.append(payload)
     return out
 
 
@@ -49,6 +53,14 @@ def _call_name(func: ast.AST) -> str | None:
     return None
 
 
+def _call_receiver(func: ast.AST) -> str | None:
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+        return func.value.id
+    if isinstance(func, ast.Call):
+        return _call_receiver(func.func)
+    return None
+
+
 def _collect_calls(node: ast.AST) -> list[dict]:
     calls: list[dict] = []
     for child in ast.iter_child_nodes(node):
@@ -57,7 +69,11 @@ def _collect_calls(node: ast.AST) -> list[dict]:
         if isinstance(child, ast.Call):
             name = _call_name(child.func)
             if name:
-                calls.append({"name": name, "line": child.lineno})
+                payload = {"name": name, "line": child.lineno}
+                receiver = _call_receiver(child.func)
+                if receiver:
+                    payload["receiver"] = receiver
+                calls.append(payload)
         calls.extend(_collect_calls(child))
     return _unique_calls(calls)
 
@@ -178,41 +194,38 @@ def parse_file(file_path: str) -> dict:
     symbols = []
 
     class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.class_stack: list[str] = []
+            self.func_stack: list[str] = []
+
+        def _function_symbol(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> dict:
+            parent = self.class_stack[-1] if self.class_stack and not self.func_stack else None
+            return {
+                "name": node.name,
+                "kind": "function",
+                "line": node.lineno,
+                "endLine": getattr(node, "end_lineno", node.lineno),
+                "indent": node.col_offset,
+                "bases": [],
+                "decorators": _decorator_names(node),
+                "docstring": _docstring(node),
+                "members": [],
+                "signature": _signature(node),
+                "calls": _collect_calls(node),
+                "parentName": parent,
+            }
+
         def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            symbols.append(
-                {
-                    "name": node.name,
-                    "kind": "function",
-                    "line": node.lineno,
-                    "endLine": getattr(node, "end_lineno", node.lineno),
-                    "indent": node.col_offset,
-                    "bases": [],
-                    "decorators": _decorator_names(node),
-                    "docstring": _docstring(node),
-                    "members": [],
-                    "signature": _signature(node),
-                    "calls": _collect_calls(node),
-                }
-            )
+            symbols.append(self._function_symbol(node))
+            self.func_stack.append(node.name)
             self.generic_visit(node)
+            self.func_stack.pop()
 
         def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            symbols.append(
-                {
-                    "name": node.name,
-                    "kind": "function",
-                    "line": node.lineno,
-                    "endLine": getattr(node, "end_lineno", node.lineno),
-                    "indent": node.col_offset,
-                    "bases": [],
-                    "decorators": _decorator_names(node),
-                    "docstring": _docstring(node),
-                    "members": [],
-                    "signature": _signature(node),
-                    "calls": _collect_calls(node),
-                }
-            )
+            symbols.append(self._function_symbol(node))
+            self.func_stack.append(node.name)
             self.generic_visit(node)
+            self.func_stack.pop()
 
         def visit_ClassDef(self, node: ast.ClassDef) -> None:
             symbols.append(
@@ -228,9 +241,12 @@ def parse_file(file_path: str) -> dict:
                     "members": _class_members(node),
                     "signature": _signature(node),
                     "calls": _collect_calls(node),
+                    "parentName": None,
                 }
             )
+            self.class_stack.append(node.name)
             self.generic_visit(node)
+            self.class_stack.pop()
 
     Visitor().visit(tree)
     module_calls = _collect_calls(tree)
@@ -252,6 +268,7 @@ def parse_file(file_path: str) -> dict:
                 "members": [],
                 "signature": "<module>",
                 "calls": module_calls,
+                "parentName": None,
             }
         )
     return {"symbols": symbols, "imports": _imports(tree)}

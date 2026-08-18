@@ -1,5 +1,6 @@
 import type {
   GraphEdge,
+  IndexedCallSite,
   IndexedSymbol,
   SymbolNeighborhood,
   WorkspaceIndex
@@ -106,8 +107,34 @@ const COMMON_METHOD_NAMES = new Set([
   "dumps"
 ]);
 
+interface SymbolRef {
+  file: string;
+  symbol: IndexedSymbol;
+}
+
+interface ResolverMaps {
+  globalByName: Map<string, SymbolRef[]>;
+  perFileByName: Map<string, Map<string, IndexedSymbol[]>>;
+  methodsByQualName: Map<string, SymbolRef>;
+}
+
 function normalizeRel(file: string): string {
   return file.replace(/\\/g, "/");
+}
+
+function methodQualKey(file: string, parentName: string, methodName: string): string {
+  return `${normalizeRel(file)}::${parentName}::${methodName}`;
+}
+
+export function displaySymbolName(symbol: IndexedSymbol, file: string): string {
+  if (symbol.name === "<module>") {
+    const base = normalizeRel(file).split("/").pop() ?? "module";
+    return base.replace(/\.py$/, "") || "module";
+  }
+  if (symbol.parentName) {
+    return `${symbol.parentName}.${symbol.name}`;
+  }
+  return symbol.name;
 }
 
 function edgeKey(edge: GraphEdge): string {
@@ -196,14 +223,19 @@ function posixJoin(...parts: string[]): string {
 export function findIndexedDefinitions(
   index: WorkspaceIndex,
   symbolName: string,
-  preferFile?: string
+  preferFile?: string,
+  options?: { includeMethods?: boolean }
 ): Array<IndexedSymbol & { file: string }> {
   const matches: Array<IndexedSymbol & { file: string }> = [];
   for (const file of Object.values(index.files)) {
     for (const symbol of file.symbols) {
-      if (symbol.name === symbolName) {
-        matches.push({ ...symbol, file: normalizeRel(file.relativePath) });
+      if (symbol.name !== symbolName) {
+        continue;
       }
+      if (!options?.includeMethods && symbol.parentName) {
+        continue;
+      }
+      matches.push({ ...symbol, file: normalizeRel(file.relativePath) });
     }
   }
   if (!preferFile) {
@@ -225,77 +257,179 @@ function toEdge(
   return {
     file: normalizeRel(file),
     line: symbol.line,
-    name: symbol.name,
+    name: displaySymbolName(symbol, file),
     kind: symbol.kind,
     confidence,
     via
   };
 }
 
-function resolveCallName(
-  index: WorkspaceIndex,
-  fromFile: string,
-  callName: string
-): GraphEdge | undefined {
-  if (shouldSkipCallName(callName, false)) {
+function buildResolverMaps(index: WorkspaceIndex): ResolverMaps {
+  const globalByName = new Map<string, SymbolRef[]>();
+  const perFileByName = new Map<string, Map<string, IndexedSymbol[]>>();
+  const methodsByQualName = new Map<string, SymbolRef>();
+
+  for (const file of Object.values(index.files)) {
+    const fromFile = normalizeRel(file.relativePath);
+    const byName = new Map<string, IndexedSymbol[]>();
+    for (const symbol of file.symbols) {
+      const list = byName.get(symbol.name) ?? [];
+      list.push(symbol);
+      byName.set(symbol.name, list);
+
+      const global = globalByName.get(symbol.name) ?? [];
+      global.push({ file: fromFile, symbol });
+      globalByName.set(symbol.name, global);
+
+      if (symbol.parentName) {
+        methodsByQualName.set(methodQualKey(fromFile, symbol.parentName, symbol.name), {
+          file: fromFile,
+          symbol
+        });
+      }
+    }
+    perFileByName.set(fromFile, byName);
+  }
+
+  return { globalByName, perFileByName, methodsByQualName };
+}
+
+function lookupFileSymbols(
+  maps: ResolverMaps,
+  file: string,
+  name: string
+): IndexedSymbol[] {
+  return maps.perFileByName.get(normalizeRel(file))?.get(name) ?? [];
+}
+
+function pickLocalSymbol(
+  named: IndexedSymbol[],
+  call: IndexedCallSite,
+  enclosing: IndexedSymbol
+): IndexedSymbol | undefined {
+  if (named.length === 0) {
     return undefined;
   }
 
+  const receiver = call.receiver;
+  if (receiver === "self" || receiver === "cls") {
+    if (enclosing.parentName) {
+      const methods = named.filter((symbol) => symbol.parentName === enclosing.parentName);
+      if (methods[0]) {
+        return methods[0];
+      }
+    }
+  }
+
+  const topLevel = named.filter((symbol) => !symbol.parentName && symbol.name !== "<module>");
+  if (topLevel.length === 1 && topLevel[0]) {
+    return topLevel[0];
+  }
+  if (named.length === 1 && named[0]) {
+    return named[0];
+  }
+  if (topLevel[0] && !receiver) {
+    return topLevel[0];
+  }
+  return undefined;
+}
+
+function resolveImportedSymbol(
+  index: WorkspaceIndex,
+  maps: ResolverMaps,
+  fromFile: string,
+  call: IndexedCallSite
+): GraphEdge | undefined {
   const origin = index.files[normalizeRel(fromFile)];
   if (!origin) {
     return undefined;
   }
 
-  const local = origin.symbols.filter((symbol) => symbol.name === callName);
-  if (local.length === 1 && local[0]) {
-    return toEdge(fromFile, local[0], 0.95, "same-file");
-  }
-  if (local.length > 1 && local[0]) {
-    return toEdge(fromFile, local[0], 0.9, "same-file");
-  }
+  const imported: SymbolRef[] = [];
+  const receiver = call.receiver;
 
-  const imported: Array<IndexedSymbol & { file: string }> = [];
   for (const item of origin.imports) {
     const nameMatches =
-      item.names.includes(callName) ||
-      item.alias === callName ||
+      item.names.includes(call.name) ||
+      item.alias === call.name ||
       item.names.includes("*") ||
-      item.kind === "import";
+      (item.kind === "import" && (item.names.includes(receiver ?? "") || item.alias === receiver));
+
     if (!nameMatches) {
       continue;
     }
-    const explicit =
-      item.names.includes(callName) || item.alias === callName || item.names.includes("*");
-    if (item.kind === "import" && !explicit) {
-      // `import foo` then `foo.bar()` — only accept if bar is unique among imported modules.
-    }
+
     for (const moduleFile of resolvePythonModuleFiles(index, fromFile, item.module)) {
-      const symbols = index.files[moduleFile]?.symbols.filter((symbol) => symbol.name === callName) ?? [];
+      if (receiver && (item.kind === "import" ? item.alias === receiver || item.names.includes(receiver) : false)) {
+        const methods = lookupFileSymbols(maps, moduleFile, call.name).filter((symbol) => Boolean(symbol.parentName));
+        for (const symbol of methods) {
+          imported.push({ file: moduleFile, symbol });
+        }
+        continue;
+      }
+
+      const symbols = lookupFileSymbols(maps, moduleFile, call.name);
       for (const symbol of symbols) {
-        imported.push({ ...symbol, file: moduleFile });
+        imported.push({ file: moduleFile, symbol });
       }
     }
   }
 
   const uniqueImported = dedupeEdges(
-    imported.map((item) => toEdge(item.file, item, 0.9, "import")),
+    imported.map((item) => toEdge(item.file, item.symbol, 0.9, "import")),
     8
   );
   if (uniqueImported.length === 1) {
     return uniqueImported[0];
   }
+  return undefined;
+}
 
-  if (shouldSkipCallName(callName, true)) {
+function resolveCallSite(
+  index: WorkspaceIndex,
+  maps: ResolverMaps,
+  fromFile: string,
+  enclosing: IndexedSymbol,
+  call: IndexedCallSite
+): GraphEdge | undefined {
+  if (shouldSkipCallName(call.name, false)) {
     return undefined;
   }
-  const all = findIndexedDefinitions(index, callName);
+
+  const receiver = call.receiver;
+  if ((receiver === "self" || receiver === "cls") && enclosing.parentName) {
+    const method = maps.methodsByQualName.get(methodQualKey(fromFile, enclosing.parentName, call.name));
+    if (method) {
+      return toEdge(method.file, method.symbol, 0.95, "same-file");
+    }
+  }
+
+  const local = pickLocalSymbol(lookupFileSymbols(maps, fromFile, call.name), call, enclosing);
+  if (local) {
+    return toEdge(fromFile, local, 0.95, "same-file");
+  }
+
+  const imported = resolveImportedSymbol(index, maps, fromFile, call);
+  if (imported) {
+    return imported;
+  }
+
+  if (shouldSkipCallName(call.name, true)) {
+    return undefined;
+  }
+
+  const all = (maps.globalByName.get(call.name) ?? []).filter(
+    (item) => !item.symbol.parentName && item.symbol.name !== "<module>"
+  );
   if (all.length === 1 && all[0]) {
-    return toEdge(all[0].file, all[0], 0.5, "unique-name");
+    return toEdge(all[0].file, all[0].symbol, 0.5, "unique-name");
   }
   return undefined;
 }
 
 export function attachCallGraph(index: WorkspaceIndex): void {
+  const maps = buildResolverMaps(index);
+
   for (const file of Object.values(index.files)) {
     for (const symbol of file.symbols) {
       symbol.callees = [];
@@ -308,7 +442,7 @@ export function attachCallGraph(index: WorkspaceIndex): void {
     for (const symbol of file.symbols) {
       const callees: GraphEdge[] = [];
       for (const call of symbol.calls ?? []) {
-        const resolved = resolveCallName(index, fromFile, call.name);
+        const resolved = resolveCallSite(index, maps, fromFile, symbol, call);
         if (!resolved) {
           continue;
         }
@@ -316,14 +450,13 @@ export function attachCallGraph(index: WorkspaceIndex): void {
           continue;
         }
         callees.push(resolved);
-        const target = index.files[resolved.file]?.symbols.find(
-          (item) => item.name === resolved.name && item.line === resolved.line
-        );
+        const targetFile = index.files[resolved.file];
+        const target = targetFile?.symbols.find((item) => item.line === resolved.line);
         if (target) {
           target.callers.push({
             file: fromFile,
             line: call.line || symbol.line,
-            name: symbol.name,
+            name: displaySymbolName(symbol, fromFile),
             kind: symbol.kind,
             confidence: resolved.confidence,
             via: resolved.via
@@ -391,7 +524,7 @@ export function lookupNeighborhood(
   }
 
   if (!target && selected) {
-    const defs = findIndexedDefinitions(index, selected, rel);
+    const defs = findIndexedDefinitions(index, selected, rel, { includeMethods: true });
     if (defs[0]) {
       target = defs[0];
     }
@@ -401,7 +534,10 @@ export function lookupNeighborhood(
     return undefined;
   }
 
-  const definitions = findIndexedDefinitions(index, target.name, target.file)
+  const definitions = findIndexedDefinitions(index, target.name, target.file, {
+    includeMethods: Boolean(target.parentName)
+  })
+    .filter((item) => !target.parentName || item.parentName === target.parentName)
     .slice(0, 6)
     .map((item) => toEdge(item.file, item, item.file === target.file ? 1 : 0.8, "same-file"));
 
@@ -416,7 +552,7 @@ export function lookupNeighborhood(
   }
 
   return {
-    symbol: target.name,
+    symbol: displaySymbolName(target, target.file),
     kind: target.kind,
     file: target.file,
     line: target.line,
