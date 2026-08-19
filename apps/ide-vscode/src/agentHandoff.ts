@@ -25,12 +25,17 @@ async function restoreClipboard(previous: string): Promise<void> {
   }
 }
 
+export interface AgentAutoSendResult {
+  opened: boolean;
+  submitted: boolean;
+}
+
 async function macAutoSendToAgent(
   prompt: string,
   options?: { forceNew?: boolean; log?: (message: string) => void }
-): Promise<boolean> {
+): Promise<AgentAutoSendResult> {
   if (process.platform !== "darwin") {
-    return false;
+    return { opened: false, submitted: false };
   }
 
   const log = options?.log ?? (() => undefined);
@@ -44,13 +49,10 @@ async function macAutoSendToAgent(
 tell application "Cursor" to activate
 delay 0.3
 tell application "System Events"
-  if (name of first process whose frontmost is true) is not "Cursor" then
-    error "Cursor is not frontmost"
-  end if
   tell process "Cursor"
     set frontmost to true
     ${openOrFocus}
-    if (name of first process whose frontmost is true) is not "Cursor" then
+    if (name of first application process whose frontmost is true) is not "Cursor" then
       error "Cursor is not frontmost"
     end if
     keystroke "a" using {command down}
@@ -65,7 +67,7 @@ end tell
   try {
     await execFileAsync("osascript", ["-e", script], { timeout: 10000 });
     log("macOS auto-send succeeded (Cmd+I → paste → Return)");
-    return true;
+    return { opened: true, submitted: true };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     log(`macOS auto-send failed: ${detail}`);
@@ -74,7 +76,7 @@ end tell
         "Codegraph needs Accessibility permission. System Settings → Privacy & Security → Accessibility → enable Cursor, Quit Cursor, reopen."
       );
     }
-    return false;
+    return { opened: false, submitted: false };
   }
 }
 
@@ -86,15 +88,16 @@ end tell
 export async function autoSendToCursorAgent(
   prompt: string,
   options?: { forceNew?: boolean; log?: (message: string) => void }
-): Promise<boolean> {
+): Promise<AgentAutoSendResult> {
   const log = options?.log ?? (() => undefined);
   const previousClipboard = await vscode.env.clipboard.readText();
   await vscode.env.clipboard.writeText(prompt);
   log(`Auto-send starting (prompt chars=${prompt.length}, forceNew=${Boolean(options?.forceNew)})`);
 
   try {
-    if (await macAutoSendToAgent(prompt, { forceNew: options?.forceNew, log })) {
-      return true;
+    const macResult = await macAutoSendToAgent(prompt, { forceNew: options?.forceNew, log });
+    if (macResult.submitted) {
+      return macResult;
     }
 
     const openCommands = options?.forceNew
@@ -122,6 +125,7 @@ export async function autoSendToCursorAgent(
     const submitCommands = [
       "composer.startGeneration",
       "workbench.action.chat.submit",
+      "workbench.action.chat.send",
       "composer.submit",
       "chatEditor.action.submit"
     ];
@@ -139,7 +143,7 @@ export async function autoSendToCursorAgent(
       void vscode.window.showWarningMessage(
         "Codegraph could not open Agent chat. Open Agent once (Cmd+I), then toggle Live Explain again."
       );
-      return false;
+      return { opened: false, submitted: false };
     }
 
     if (!submitted) {
@@ -147,10 +151,10 @@ export async function autoSendToCursorAgent(
       void vscode.window.showWarningMessage(
         "Codegraph pasted into Agent but could not auto-submit. On macOS enable Accessibility for Cursor."
       );
-      return false;
+      return { opened: true, submitted: false };
     }
 
-    return true;
+    return { opened: true, submitted: true };
   } finally {
     await restoreClipboard(previousClipboard);
   }
