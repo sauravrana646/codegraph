@@ -663,7 +663,7 @@ function answerFormatForDepth(depth: ExplainDepth): string[] {
     return [
       "ANSWER FORMAT (short):",
       "1) One-line location",
-      "2) Purpose in 2-4 sentences",
+      "2) Purpose: why this exists in the application, which component/module uses it, and what it produces or returns",
       "3) End with: Ask about that, or keep moving."
     ];
   }
@@ -671,7 +671,7 @@ function answerFormatForDepth(depth: ExplainDepth): string[] {
     return [
       "ANSWER FORMAT (deep — teach the design, not just the syntax):",
       "1) Location + short code citation",
-      "2) Purpose / use case — what problem this solves in the product/workflow (who calls it, when)",
+      "2) Purpose / use case — why this exists in the application, which component calls it, what it outputs, and what problem it solves in the product/workflow",
       "3) Concrete example (realistic input → what happens step-by-step → result)",
       "4) Fields / API surface table when applicable (Field | Meaning | Why it exists)",
       "5) Why NOT the simpler option — name 1–2 simpler alternatives people might reach for",
@@ -691,7 +691,7 @@ function answerFormatForDepth(depth: ExplainDepth): string[] {
   return [
     "ANSWER FORMAT (standard):",
     "1) Location + short code citation",
-    "2) Purpose",
+    "2) Purpose — why this function/class/field exists in the application, which component or module calls it, what it outputs or returns, and what role it plays in the broader workflow",
     "3) Fields table (Field | Meaning) when applicable",
     "4) Valid shapes / examples when useful",
     "5) Docstring/validator notes",
