@@ -17,6 +17,14 @@ async function tryExecuteCommand(command: string, ...args: unknown[]): Promise<b
   }
 }
 
+async function restoreClipboard(previous: string): Promise<void> {
+  try {
+    await vscode.env.clipboard.writeText(previous);
+  } catch {
+    // ignore restore failures
+  }
+}
+
 async function macAutoSendToAgent(
   prompt: string,
   options?: { forceNew?: boolean; log?: (message: string) => void }
@@ -36,9 +44,15 @@ async function macAutoSendToAgent(
 tell application "Cursor" to activate
 delay 0.3
 tell application "System Events"
+  if (name of first process whose frontmost is true) is not "Cursor" then
+    error "Cursor is not frontmost"
+  end if
   tell process "Cursor"
     set frontmost to true
     ${openOrFocus}
+    if (name of first process whose frontmost is true) is not "Cursor" then
+      error "Cursor is not frontmost"
+    end if
     keystroke "a" using {command down}
     delay 0.1
     keystroke "v" using {command down}
@@ -67,6 +81,7 @@ end tell
 /**
  * Fully automatic Agent handoff. On macOS, prefer Accessibility automation because
  * Cursor chat commands often "succeed" without actually inserting/submitting the prompt.
+ * Auto-submit briefly uses the clipboard and restores it immediately after paste completes.
  */
 export async function autoSendToCursorAgent(
   prompt: string,
@@ -77,67 +92,66 @@ export async function autoSendToCursorAgent(
   await vscode.env.clipboard.writeText(prompt);
   log(`Auto-send starting (prompt chars=${prompt.length}, forceNew=${Boolean(options?.forceNew)})`);
 
-  // 1) macOS first — only path that reliably auto-submits in Cursor.
-  if (await macAutoSendToAgent(prompt, { forceNew: options?.forceNew, log })) {
-    setTimeout(() => void vscode.env.clipboard.writeText(previousClipboard), 3000);
+  try {
+    if (await macAutoSendToAgent(prompt, { forceNew: options?.forceNew, log })) {
+      return true;
+    }
+
+    const openCommands = options?.forceNew
+      ? ["composer.newAgentChat", "aichat.newchataction", "workbench.action.chat.newChat", "workbench.action.chat.open"]
+      : ["composer.focusComposer", "composer.newAgentChat", "aichat.newchataction", "workbench.action.chat.open"];
+
+    let opened = false;
+    for (const command of openCommands) {
+      if (await tryExecuteCommand(command)) {
+        opened = true;
+        log(`Opened/focused via ${command}`);
+        break;
+      }
+      if (await tryExecuteCommand(command, { query: prompt })) {
+        opened = true;
+        log(`Opened with query via ${command}`);
+        break;
+      }
+    }
+
+    await sleep(500);
+    await tryExecuteCommand("editor.action.clipboardPasteAction");
+    await sleep(250);
+
+    const submitCommands = [
+      "composer.startGeneration",
+      "workbench.action.chat.submit",
+      "composer.submit",
+      "chatEditor.action.submit"
+    ];
+    let submitted = false;
+    for (const command of submitCommands) {
+      if (await tryExecuteCommand(command)) {
+        submitted = true;
+        log(`Submitted via ${command}`);
+        break;
+      }
+    }
+
+    if (!opened) {
+      log("Agent auto-send failed: could not open Agent chat");
+      void vscode.window.showWarningMessage(
+        "Codegraph could not open Agent chat. Open Agent once (Cmd+I), then toggle Live Explain again."
+      );
+      return false;
+    }
+
+    if (!submitted) {
+      log("Agent opened/pasted but submit command unavailable");
+      void vscode.window.showWarningMessage(
+        "Codegraph pasted into Agent but could not auto-submit. On macOS enable Accessibility for Cursor."
+      );
+      return false;
+    }
+
     return true;
+  } finally {
+    await restoreClipboard(previousClipboard);
   }
-
-  // 2) Command fallbacks (may only open chat without submit on some Cursor builds).
-  const openCommands = options?.forceNew
-    ? ["composer.newAgentChat", "aichat.newchataction", "workbench.action.chat.newChat", "workbench.action.chat.open"]
-    : ["composer.focusComposer", "composer.newAgentChat", "aichat.newchataction", "workbench.action.chat.open"];
-
-  let opened = false;
-  for (const command of openCommands) {
-    if (await tryExecuteCommand(command)) {
-      opened = true;
-      log(`Opened/focused via ${command}`);
-      break;
-    }
-    if (await tryExecuteCommand(command, { query: prompt })) {
-      opened = true;
-      log(`Opened with query via ${command}`);
-      break;
-    }
-  }
-
-  await sleep(500);
-  await tryExecuteCommand("editor.action.clipboardPasteAction");
-  await sleep(250);
-
-  const submitCommands = [
-    "composer.startGeneration",
-    "workbench.action.chat.submit",
-    "composer.submit",
-    "chatEditor.action.submit"
-  ];
-  let submitted = false;
-  for (const command of submitCommands) {
-    if (await tryExecuteCommand(command)) {
-      submitted = true;
-      log(`Submitted via ${command}`);
-      break;
-    }
-  }
-
-  setTimeout(() => void vscode.env.clipboard.writeText(previousClipboard), 3000);
-
-  if (!opened) {
-    log("Agent auto-send failed: could not open Agent chat");
-    void vscode.window.showWarningMessage(
-      "Codegraph could not open Agent chat. Open Agent once (Cmd+I), then toggle Live Explain again."
-    );
-    return false;
-  }
-
-  if (!submitted) {
-    log("Agent opened/pasted but submit command unavailable");
-    void vscode.window.showWarningMessage(
-      "Codegraph pasted into Agent but could not auto-submit. On macOS enable Accessibility for Cursor."
-    );
-    return false;
-  }
-
-  return true;
 }

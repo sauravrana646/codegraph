@@ -18,7 +18,9 @@ Usage:
   codegraph.sh serve [port]
 
 Environment:
-  CODEGRAPH_ROOT   Absolute path to the Codegraph repo (default: inferred from this skill)
+  CODEGRAPH_ROOT            Absolute path to the Codegraph repo (default: inferred from this skill)
+  CODEGRAPH_RUNTIME_TOKEN   Bearer token forwarded to the runtime HTTP API
+  CODEGRAPH_ALLOWED_ROOTS   Path-delimiter list of allowed workspace roots
 EOF
 }
 
@@ -28,6 +30,34 @@ require_runtime() {
     echo "Run: cd \"$CODEGRAPH_ROOT\" && npm install && npm run build" >&2
     exit 1
   fi
+}
+
+curl_json() {
+  local url="$1"
+  local payload="${2:-}"
+  local -a headers=()
+  if [[ -n "${CODEGRAPH_RUNTIME_TOKEN:-}" ]]; then
+    headers+=(-H "Authorization: Bearer ${CODEGRAPH_RUNTIME_TOKEN}")
+  fi
+  if [[ -n "$payload" ]]; then
+    curl -fsS -X POST "$url" \
+      -H "content-type: application/json" \
+      "${headers[@]}" \
+      -d "$payload"
+  else
+    curl -fsS "$url" "${headers[@]}"
+  fi
+}
+
+generate_token() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 32
+    return
+  fi
+  python3 - <<'PY'
+import secrets
+print(secrets.token_hex(32))
+PY
 }
 
 post_tool() {
@@ -58,9 +88,7 @@ PY
 )"
 
   if command -v curl >/dev/null 2>&1 && curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
-    curl -fsS -X POST "http://127.0.0.1:${port}/v1/tools/${tool}" \
-      -H "content-type: application/json" \
-      -d "$payload"
+    curl_json "http://127.0.0.1:${port}/v1/tools/${tool}" "$payload"
     echo
     return
   fi
@@ -76,11 +104,16 @@ PY
       ;;
     *)
       require_runtime
-      # Start a short-lived server for non-explain tools when none is running.
       local tmp_port=$((4300 + RANDOM % 200))
-      node "$RUNTIME_ENTRY" serve "$tmp_port" >/tmp/codegraph-skill-serve.log 2>&1 &
+      local tmp_log
+      tmp_log="$(mktemp -t codegraph-skill-serve.XXXXXX)"
+      if [[ -z "${CODEGRAPH_RUNTIME_TOKEN:-}" ]]; then
+        CODEGRAPH_RUNTIME_TOKEN="$(generate_token)"
+        export CODEGRAPH_RUNTIME_TOKEN
+      fi
+      node "$RUNTIME_ENTRY" serve "$tmp_port" >"$tmp_log" 2>&1 &
       local pid=$!
-      cleanup() { kill "$pid" >/dev/null 2>&1 || true; }
+      cleanup() { kill "$pid" >/dev/null 2>&1 || true; rm -f "$tmp_log"; }
       trap cleanup EXIT
       for _ in $(seq 1 30); do
         if curl -fsS "http://127.0.0.1:${tmp_port}/health" >/dev/null 2>&1; then
@@ -88,9 +121,7 @@ PY
         fi
         sleep 0.1
       done
-      curl -fsS -X POST "http://127.0.0.1:${tmp_port}/v1/tools/${tool}" \
-        -H "content-type: application/json" \
-        -d "$payload"
+      curl_json "http://127.0.0.1:${tmp_port}/v1/tools/${tool}" "$payload"
       echo
       cleanup
       trap - EXIT

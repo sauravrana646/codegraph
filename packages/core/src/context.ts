@@ -21,6 +21,8 @@ export interface ProjectOverview {
   symbolCount: number;
   classCount: number;
   functionCount: number;
+  parseAst: number;
+  parseRegex: number;
   topLevelPackages: string[];
   entrypoints: string[];
   notableSymbols: Array<{ file: string; line: number; name: string; kind: string }>;
@@ -77,9 +79,16 @@ export function buildProjectOverview(index: WorkspaceIndex): ProjectOverview {
   const packages = new Set<string>();
   let classCount = 0;
   let functionCount = 0;
+  let parseAst = 0;
+  let parseRegex = 0;
   const notable: ProjectOverview["notableSymbols"] = [];
 
   for (const file of files) {
+    if (file.parseSource === "regex_fallback") {
+      parseRegex += 1;
+    } else {
+      parseAst += 1;
+    }
     const top = normalizeRel(file.relativePath).split("/")[0];
     if (top && !top.startsWith(".") && top.endsWith(".py") === false) {
       packages.add(top);
@@ -127,6 +136,8 @@ export function buildProjectOverview(index: WorkspaceIndex): ProjectOverview {
     symbolCount: classCount + functionCount,
     classCount,
     functionCount,
+    parseAst,
+    parseRegex,
     topLevelPackages: [...packages].sort().slice(0, 16),
     entrypoints,
     notableSymbols: notable

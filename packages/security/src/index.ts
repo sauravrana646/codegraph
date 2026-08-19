@@ -11,6 +11,18 @@ export interface SecretMatch {
   end: number;
 }
 
+export class FileTooLargeError extends Error {
+  readonly size: number;
+  readonly maxBytes: number;
+
+  constructor(size: number, maxBytes: number) {
+    super(`File exceeds maxBytes (${size} > ${maxBytes})`);
+    this.name = "FileTooLargeError";
+    this.size = size;
+    this.maxBytes = maxBytes;
+  }
+}
+
 const SECRET_PATTERNS: Array<{ kind: SecretMatch["kind"]; pattern: RegExp }> = [
   // Full PEM / OpenSSH private key blocks
   {
@@ -86,7 +98,10 @@ export function redactSecrets(content: string): string {
   return redacted;
 }
 
-export async function assertSymlinkContained(rootPath: string, inputPath: string): Promise<WorkspaceRelativePath> {
+export async function resolveContainedRealPath(
+  rootPath: string,
+  inputPath: string
+): Promise<{ relativePath: WorkspaceRelativePath; realPath: string }> {
   const normalizedRoot = path.resolve(rootPath);
   const realRoot = await fs.realpath(normalizedRoot).catch(() => normalizedRoot);
   const resolvedPath = normalizeWorkspacePath(normalizedRoot, inputPath);
@@ -103,17 +118,36 @@ export async function assertSymlinkContained(rootPath: string, inputPath: string
     throw new Error(`Symlink escapes workspace root: ${inputPath}`);
   }
 
-  return toWorkspaceRelativePath(normalizedRoot, resolvedPath);
+  return {
+    relativePath: toWorkspaceRelativePath(normalizedRoot, resolvedPath),
+    realPath
+  };
 }
 
-export async function readContainedFile(rootPath: string, inputPath: string): Promise<{
+export async function assertSymlinkContained(rootPath: string, inputPath: string): Promise<WorkspaceRelativePath> {
+  const contained = await resolveContainedRealPath(rootPath, inputPath);
+  return contained.relativePath;
+}
+
+export async function readContainedFile(
+  rootPath: string,
+  inputPath: string,
+  options?: { maxBytes?: number }
+): Promise<{
   absolutePath: string;
   relativePath: WorkspaceRelativePath;
   content: string;
 }> {
-  const relativePath = await assertSymlinkContained(rootPath, inputPath);
-  const absolutePath = normalizeWorkspacePath(rootPath, relativePath);
-  const content = await fs.readFile(absolutePath, "utf8");
+  const { relativePath, realPath } = await resolveContainedRealPath(rootPath, inputPath);
 
-  return { absolutePath, relativePath, content };
+  if (options?.maxBytes !== undefined) {
+    const stat = await fs.stat(realPath);
+    if (stat.size > options.maxBytes) {
+      throw new FileTooLargeError(stat.size, options.maxBytes);
+    }
+  }
+
+  const content = await fs.readFile(realPath, "utf8");
+
+  return { absolutePath: realPath, relativePath, content };
 }

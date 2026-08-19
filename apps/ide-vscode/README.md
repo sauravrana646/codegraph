@@ -39,7 +39,11 @@ Turn Live ON once, then **only move your cursor** — no typing, no Enter.
 
 **Agent mode (default):** a slim pointer plus index neighborhood (`codegraph-slim-v4`) is auto-sent to Cursor Agent chat. Agent reads the **target section** (not the whole repo) and explains. On macOS, allow **Accessibility** for Cursor the first time (System Settings → Privacy & Security → Accessibility).
 
-**API key mode:** pick a provider (OpenRouter, OpenAI, Groq, Gemini, …); base URL is set automatically. You only enter **API key** + **model**. Enrichment shows in the Codegraph panel.
+**API key mode:** pick a provider (OpenRouter, OpenAI, Groq, Gemini, …); base URL is set automatically. You only enter **API key** + **model**. The key is stored in VS Code **Secret Storage**, not `.vscode/settings.json`. Enrichment shows in the Codegraph panel.
+
+After upgrading the extension, run **Codegraph: Rebuild Local Index** (index schema v3: methods are class-qualified).
+
+On macOS, auto-submit briefly uses the clipboard and restores it as soon as paste completes. Keep Cursor focused while the prompt is sent.
 
 Command: **Codegraph: Configure API Provider**
 

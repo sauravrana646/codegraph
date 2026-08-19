@@ -1,10 +1,6 @@
-import fs from "node:fs/promises";
-import path from "node:path";
-
-import { parsePythonFile, type PythonAstMember, type PythonAstSymbol } from "@codegraph/language-intelligence";
+import { type PythonAstMember } from "@codegraph/language-intelligence";
 import {
   ensureWorkspaceIndex,
-  reindexPaths,
   lookupNeighborhood,
   type IndexedSymbol,
   type WorkspaceIndex
@@ -37,7 +33,7 @@ export {
   searchIndexedSymbols,
   traceCallChain
 } from "./context";
-export { ensureWorkspaceIndex, lookupNeighborhood, readNeighborhoodLines, reindexPaths } from "@codegraph/indexer";
+export { ensureWorkspaceIndex, lookupNeighborhood, readNeighborhoodLines, reindexPaths, getCachedWorkspaceIndex, neighborhoodLinesForPointer, readWorkspaceIndex, indexStoragePath } from "@codegraph/indexer";
 export { loadSession } from "@codegraph/sessions";
 
 export interface ExplainSelectionRequest {
@@ -146,22 +142,6 @@ const PYTHON_KEYWORDS = new Set([
 
 const MAX_DEFINITION_EXCERPT_LINES = 36;
 
-function languageFromFile(filePath: string): string | undefined {
-  if (filePath.endsWith(".py")) {
-    return "python";
-  }
-
-  if (filePath.endsWith(".ts") || filePath.endsWith(".tsx")) {
-    return "typescript";
-  }
-
-  if (filePath.endsWith(".js") || filePath.endsWith(".jsx")) {
-    return "javascript";
-  }
-
-  return undefined;
-}
-
 function buildExcerpt(lines: string[], lineNumber: number, radius = 2): string {
   const startLine = Math.max(0, lineNumber - 1 - radius);
   const endLine = Math.min(lines.length, lineNumber + radius);
@@ -191,10 +171,6 @@ function createSourceReference(
   return { file, line, excerpt, kind, score };
 }
 
-function escapeForRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 function getLine(lines: string[], lineNumber: number): string {
   return lines[Math.max(0, lineNumber - 1)] ?? "";
 }
@@ -221,256 +197,10 @@ function detectSelectedSymbol(lines: string[], lineNumber: number, selectedText?
   return extractSymbolFromLine(getLine(lines, lineNumber));
 }
 
-function hydratePythonSymbols(file: string, content: string, symbols: PythonAstSymbol[]): PythonSymbol[] {
-  const lines = content.split(/\r?\n/);
-
-  return symbols.map((symbol) => ({
-    name: symbol.name,
-    kind: symbol.kind,
-    file,
-    line: symbol.line,
-    endLine: symbol.endLine,
-    indent: symbol.indent,
-    bases: symbol.bases ?? [],
-    decorators: symbol.decorators ?? [],
-    docstring: symbol.docstring ?? undefined,
-    members: symbol.members ?? [],
-    excerpt: redactSecrets(buildSpanExcerpt(lines, symbol.line, symbol.endLine))
-  }));
-}
-
 function findContainingPythonScopes(symbols: PythonSymbol[], lineNumber: number, file: string): PythonSymbol[] {
   return symbols
     .filter((symbol) => symbol.file === file && symbol.line <= lineNumber && symbol.endLine >= lineNumber)
     .sort((left, right) => left.line - right.line);
-}
-
-async function walkWorkspaceFiles(rootPath: string, currentDir = rootPath): Promise<string[]> {
-  const entries = await fs.readdir(currentDir, { withFileTypes: true });
-  const files: string[] = [];
-
-  for (const entry of entries) {
-    if (entry.name === ".git" || entry.name === "node_modules" || entry.name === "dist") {
-      continue;
-    }
-
-    // Skip symlink entries so workspace walks cannot escape via linked files/dirs.
-    if (entry.isSymbolicLink()) {
-      continue;
-    }
-
-    const absolutePath = path.join(currentDir, entry.name);
-
-    if (entry.isDirectory()) {
-      files.push(...(await walkWorkspaceFiles(rootPath, absolutePath)));
-      continue;
-    }
-
-    if (!entry.isFile()) {
-      continue;
-    }
-
-    files.push(path.relative(rootPath, absolutePath));
-  }
-
-  return files;
-}
-
-async function readWorkspacePythonFiles(
-  rootPath: string,
-  preferRelativePath?: string
-): Promise<Array<{ file: string; absolutePath: string; content: string }>> {
-  const files = await walkWorkspaceFiles(rootPath);
-  const pythonFiles = files.filter((file) => file.endsWith(".py"));
-  const preferred = preferRelativePath?.replace(/\\/g, "/");
-  const ordered = preferred
-    ? [preferred, ...pythonFiles.filter((file) => file.replace(/\\/g, "/") !== preferred)].slice(0, 200)
-    : pythonFiles.slice(0, 200);
-  const unique = [...new Set(ordered)];
-  const results: Array<{ file: string; absolutePath: string; content: string }> = [];
-
-  for (const file of unique) {
-    try {
-      const contained = await readContainedFile(rootPath, file);
-      results.push({
-        file: contained.relativePath,
-        absolutePath: contained.absolutePath,
-        content: contained.content
-      });
-    } catch {
-      // Skip files that fail containment checks.
-    }
-  }
-
-  return results;
-}
-
-async function collectWorkspacePythonSymbols(
-  files: Array<{ file: string; absolutePath: string; content: string }>
-): Promise<WorkspacePythonAnalysis> {
-  const allSymbols = await Promise.all(
-    files.map(async ({ file, absolutePath, content }) => {
-      const parseResult = await parsePythonFile(absolutePath, content);
-
-      return {
-        symbols: hydratePythonSymbols(file, content, parseResult.symbols),
-        usedAst: parseResult.source === "python_ast"
-      };
-    })
-  );
-
-  return {
-    symbols: allSymbols.flatMap((result) => result.symbols),
-    usedAst: allSymbols.some((result) => result.usedAst)
-  };
-}
-
-function findSymbolDefinitions(symbols: PythonSymbol[], symbolName: string, preferFile?: string): PythonSymbol[] {
-  const matches = symbols.filter((symbol) => symbol.name === symbolName);
-  if (!preferFile) {
-    return matches;
-  }
-
-  return [
-    ...matches.filter((symbol) => symbol.file === preferFile),
-    ...matches.filter((symbol) => symbol.file !== preferFile)
-  ];
-}
-
-function classifyReferenceKind(line: string, symbolName: string): ReferenceKind {
-  const escaped = escapeForRegex(symbolName);
-
-  if (new RegExp(`^\\s*(?:async\\s+)?(?:def|class)\\s+${escaped}\\b`).test(line)) {
-    return "definition";
-  }
-
-  if (new RegExp(`\\b(?:from\\s+\\S+\\s+import\\s+.*\\b${escaped}\\b|import\\s+.*\\b${escaped}\\b)`).test(line)) {
-    return "import";
-  }
-
-  if (new RegExp(`\\b${escaped}\\s*\\(`).test(line)) {
-    return "call";
-  }
-
-  if (new RegExp(`\\.${escaped}\\b`).test(line) || new RegExp(`\\b${escaped}\\.`).test(line)) {
-    return "attribute";
-  }
-
-  return "mention";
-}
-
-function scoreReference(kind: ReferenceKind, sameFile: boolean): number {
-  const kindScore: Record<ReferenceKind, number> = {
-    call: 100,
-    attribute: 80,
-    import: 60,
-    mention: 40,
-    definition: 10
-  };
-
-  return kindScore[kind] + (sameFile ? 5 : 0);
-}
-
-/** Names that text-grep into noise if used for Jump usages. */
-const NOISE_SYMBOL_NAMES = new Set([
-  "self",
-  "cls",
-  "args",
-  "kwargs",
-  "data",
-  "value",
-  "values",
-  "item",
-  "items",
-  "key",
-  "keys",
-  "result",
-  "results",
-  "error",
-  "errors",
-  "msg",
-  "message",
-  "path",
-  "name",
-  "type",
-  "id",
-  "obj",
-  "config",
-  "options",
-  "params",
-  "status",
-  "state",
-  "count",
-  "index",
-  "line",
-  "file",
-  "text",
-  "content"
-]);
-
-function findSymbolReferences(
-  files: Array<{ file: string; content: string }>,
-  symbolName: string,
-  definitions: SourceReference[],
-  originFile: string,
-  limit = 8
-): SourceReference[] {
-  // Too-short / ultra-common names produce "random" Jump lines via text scan.
-  if (symbolName.length < 3 || NOISE_SYMBOL_NAMES.has(symbolName)) {
-    return [];
-  }
-
-  const pattern = new RegExp(`\\b${escapeForRegex(symbolName)}\\b`);
-  const definitionKeys = new Set(definitions.map((definition) => `${definition.file}:${definition.line}`));
-  const references: SourceReference[] = [];
-
-  for (const { file, content } of files) {
-    const lines = content.split(/\r?\n/);
-
-    for (let index = 0; index < lines.length; index += 1) {
-      const line = lines[index] ?? "";
-      const lineNumber = index + 1;
-      const key = `${file}:${lineNumber}`;
-
-      if (!pattern.test(line) || definitionKeys.has(key)) {
-        continue;
-      }
-
-      const kind = classifyReferenceKind(line, symbolName);
-
-      if (kind === "definition") {
-        continue;
-      }
-
-      // Skip bare mentions when the line is only a comment/string-ish noise heuristic:
-      // prefer structured refs (import / call / attribute) for Jump quality.
-      if (kind === "mention" && /^\s*#/.test(line)) {
-        continue;
-      }
-
-      references.push(
-        createSourceReference(
-          file,
-          lineNumber,
-          redactSecrets(buildExcerpt(lines, lineNumber)),
-          kind,
-          scoreReference(kind, file === originFile)
-        )
-      );
-    }
-  }
-
-  const deduped = dedupeReferences(references).sort(
-    (left, right) => (right.score ?? 0) - (left.score ?? 0)
-  );
-  const strong = deduped.filter(
-    (item) => item.kind === "call" || item.kind === "import" || item.kind === "attribute"
-  );
-  // Prefer import/call/attribute. Fall back to a few mentions only if nothing stronger exists.
-  if (strong.length > 0) {
-    return strong.slice(0, limit);
-  }
-  return deduped.filter((item) => item.kind === "mention").slice(0, Math.min(3, limit));
 }
 
 function dedupeReferences(references: SourceReference[]): SourceReference[] {
