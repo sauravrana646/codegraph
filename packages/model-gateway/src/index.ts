@@ -671,15 +671,16 @@ function answerFormatForDepth(depth: ExplainDepth): string[] {
     return [
       "ANSWER FORMAT (deep — teach the design, not just the syntax):",
       "1) Location + short code citation",
-      "2) Purpose / use case — why this exists in the application, which component calls it, what it outputs, and what problem it solves in the product/workflow",
-      "3) Concrete example (realistic input → what happens step-by-step → result)",
-      "4) Fields / API surface table when applicable (Field | Meaning | Why it exists)",
-      "5) Why NOT the simpler option — name 1–2 simpler alternatives people might reach for",
+      "2) Purpose — which component calls this, what it outputs or returns, how it fits in the workflow",
+      "3) Why it exists — why this code is needed in the application, what problem or requirement it solves, what would break or be missing without it",
+      "4) Concrete example (realistic input → what happens step-by-step → result)",
+      "5) Fields / API surface table when applicable (Field | Meaning | Why it exists)",
+      "6) Why NOT the simpler option — name 1–2 simpler alternatives people might reach for",
       "   (plain dict, ad-hoc if/else, looser types, different pattern) and why each falls short HERE",
-      "6) Why THIS way is better — tradeoffs accepted and benefits bought (safety, clarity, reuse, invariants)",
-      "7) Valid shapes / edge cases / failure modes",
-      "8) How it connects to nearby modules/callers",
-      "9) End with: Ask about that, or keep moving.",
+      "7) Why THIS way is better — tradeoffs accepted and benefits bought (safety, clarity, reuse, invariants)",
+      "8) Valid shapes / edge cases / failure modes",
+      "9) How it connects to nearby modules/callers",
+      "10) End with: Ask about that, or keep moving.",
       "",
       "Deep mode rules:",
       "- Prefer design rationale over restating the code line-by-line.",
@@ -691,11 +692,12 @@ function answerFormatForDepth(depth: ExplainDepth): string[] {
   return [
     "ANSWER FORMAT (standard):",
     "1) Location + short code citation",
-    "2) Purpose — why this function/class/field exists in the application, which component or module calls it, what it outputs or returns, and what role it plays in the broader workflow",
-    "3) Fields table (Field | Meaning) when applicable",
-    "4) Valid shapes / examples when useful",
-    "5) Docstring/validator notes",
-    "6) End with: Ask about that, or keep moving."
+    "2) Purpose — which component or module calls this, what it outputs or returns",
+    "3) Why it exists — why this code is needed in the application, what problem or requirement it solves, what would break or be missing without it",
+    "4) Fields table (Field | Meaning) when applicable",
+    "5) Valid shapes / examples when useful",
+    "6) Docstring/validator notes",
+    "7) End with: Ask about that, or keep moving."
   ];
 }
 
