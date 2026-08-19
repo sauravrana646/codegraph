@@ -1252,14 +1252,14 @@ async function handOffToCursorAgent(
     return false;
   }
 
-  const ok = await autoSendToCursorAgent(prompt, {
+  const result = await autoSendToCursorAgent(prompt, {
     forceNew: options?.forceNew,
     log: (message) => getOutputChannel().appendLine(message)
   });
-  if (ok) {
+  if (result.opened) {
     agentChatOpened = true;
   }
-  return ok;
+  return result.submitted;
 }
 
 /** Minimal session envelope — no AST/LSP payloads. */
