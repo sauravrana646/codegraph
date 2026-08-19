@@ -17,22 +17,6 @@ async function tryExecuteCommand(command: string, ...args: unknown[]): Promise<b
   }
 }
 
-async function trySubmitViaTyping(log: (message: string) => void): Promise<boolean> {
-  const attempts: Array<{ command: string; args: unknown[]; label: string }> = [
-    { command: "type", args: [{ text: "\n" }], label: "type newline" },
-    { command: "type", args: [{ text: "\r" }], label: "type carriage-return" }
-  ];
-
-  for (const attempt of attempts) {
-    if (await tryExecuteCommand(attempt.command, ...attempt.args)) {
-      log(`Submitted via ${attempt.label}`);
-      return true;
-    }
-  }
-
-  return false;
-}
-
 async function restoreClipboard(previous: string): Promise<void> {
   try {
     await vscode.env.clipboard.writeText(previous);
@@ -68,9 +52,6 @@ tell application "System Events"
   tell process "Cursor"
     set frontmost to true
     ${openOrFocus}
-    if (name of first application process whose frontmost is true) is not "Cursor" then
-      error "Cursor is not frontmost"
-    end if
     keystroke "a" using {command down}
     delay 0.1
     keystroke "v" using {command down}
@@ -152,9 +133,6 @@ export async function autoSendToCursorAgent(
         log(`Submitted via ${command}`);
         break;
       }
-    }
-    if (!submitted) {
-      submitted = await trySubmitViaTyping(log);
     }
 
     if (!opened) {
