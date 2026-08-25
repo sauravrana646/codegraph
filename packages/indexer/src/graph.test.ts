@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { describe, it } from "node:test";
 
-import { attachCallGraph, findIndexedDefinitions, lookupNeighborhood, resolvePythonModuleFiles } from "./graph";
+import {
+  attachCallGraph,
+  findIndexedDefinitions,
+  lookupNeighborhood,
+  resolveGoPackageFiles,
+  resolvePythonModuleFiles
+} from "./graph";
 import { INDEX_VERSION, type IndexedFile, type IndexedSymbol, type WorkspaceIndex } from "./types";
 
 function symbol(partial: Partial<IndexedSymbol> & Pick<IndexedSymbol, "name" | "kind" | "line">): IndexedSymbol {
@@ -16,13 +23,19 @@ function symbol(partial: Partial<IndexedSymbol> & Pick<IndexedSymbol, "name" | "
   };
 }
 
-function file(relativePath: string, symbols: IndexedSymbol[], imports: IndexedFile["imports"] = []): IndexedFile {
+function file(
+  relativePath: string,
+  symbols: IndexedSymbol[],
+  imports: IndexedFile["imports"] = [],
+  language: IndexedFile["language"] = relativePath.endsWith(".go") ? "go" : "python"
+): IndexedFile {
   return {
     relativePath,
     contentHash: "x",
     mtimeMs: 1,
     size: 1,
-    parseSource: "python_ast",
+    language,
+    parseSource: language === "go" ? "go_ast" : "python_ast",
     symbols,
     imports
   };
@@ -200,5 +213,80 @@ describe("lookupNeighborhood", () => {
     });
     const neighborhood = lookupNeighborhood(graph, "svc.py", 15, "save");
     assert.equal(neighborhood?.callees[0]?.name, "PaymentService._send");
+  });
+});
+
+describe("resolveGoPackageFiles", () => {
+  it("maps module import paths to package files using go.mod", () => {
+    const root = "/tmp/codegraph-go-resolve-test";
+    fs.mkdirSync(`${root}/cmd/app`, { recursive: true });
+    fs.mkdirSync(`${root}/internal/util`, { recursive: true });
+    fs.writeFileSync(`${root}/go.mod`, "module example.com/demo\n\ngo 1.22\n");
+    fs.writeFileSync(`${root}/internal/util/helper.go`, "package util\n");
+    fs.writeFileSync(`${root}/cmd/app/main.go`, "package main\n");
+
+    const graph = index({
+      "cmd/app/main.go": file("cmd/app/main.go", []),
+      "internal/util/helper.go": file("internal/util/helper.go", [
+        symbol({ name: "Helper", kind: "function", line: 3 })
+      ])
+    });
+    graph.rootPath = root;
+
+    assert.deepEqual(resolveGoPackageFiles(graph, "cmd/app/main.go", "example.com/demo/internal/util"), [
+      "internal/util/helper.go"
+    ]);
+  });
+});
+
+describe("go call resolution", () => {
+  it("binds method receivers on the enclosing type", () => {
+    const graph = index({
+      "server.go": file("server.go", [
+        symbol({ name: "Server", kind: "class", line: 1, endLine: 20 }),
+        symbol({
+          name: "Handle",
+          kind: "function",
+          line: 5,
+          endLine: 10,
+          parentName: "Server",
+          calls: [{ name: "log", line: 6, receiver: "s" }]
+        }),
+        symbol({ name: "log", kind: "function", line: 12, endLine: 14, parentName: "Server" })
+      ])
+    });
+    attachCallGraph(graph);
+    const handle = graph.files["server.go"]?.symbols.find((item) => item.name === "Handle");
+    assert.equal(handle?.callees[0]?.name, "Server.log");
+    assert.equal(handle?.callees[0]?.via, "same-file");
+  });
+
+  it("resolves import-scoped package functions", () => {
+    const root = "/tmp/codegraph-go-import-test";
+    fs.mkdirSync(`${root}/internal/util`, { recursive: true });
+    fs.writeFileSync(`${root}/go.mod`, "module example.com/demo\n\ngo 1.22\n");
+
+    const graph = index({
+      "cmd/app/main.go": file(
+        "cmd/app/main.go",
+        [
+          symbol({
+            name: "main",
+            kind: "function",
+            line: 8,
+            calls: [{ name: "Helper", line: 9, receiver: "util" }]
+          })
+        ],
+        [{ kind: "import", module: "example.com/demo/internal/util", names: ["util"], alias: null, line: 3 }]
+      ),
+      "internal/util/helper.go": file("internal/util/helper.go", [
+        symbol({ name: "Helper", kind: "function", line: 3 })
+      ])
+    });
+    graph.rootPath = root;
+    attachCallGraph(graph);
+    const main = graph.files["cmd/app/main.go"]?.symbols.find((item) => item.name === "main");
+    assert.equal(main?.callees[0]?.file, "internal/util/helper.go");
+    assert.equal(main?.callees[0]?.via, "import");
   });
 });

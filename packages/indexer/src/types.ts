@@ -1,7 +1,8 @@
-export const INDEX_VERSION = 3;
+export const INDEX_VERSION = 4;
 
 export type CallResolveVia = "same-file" | "import" | "unique-name";
-export type ParseSource = "python_ast" | "regex_fallback";
+export type ParseSource = "python_ast" | "regex_fallback" | "go_ast" | "go_regex_fallback";
+export type IndexedLanguage = "python" | "go";
 
 export interface GraphEdge {
   file: string;
@@ -46,6 +47,7 @@ export interface IndexedFile {
   contentHash: string;
   mtimeMs: number;
   size: number;
+  language: IndexedLanguage;
   parseSource: ParseSource;
   symbols: IndexedSymbol[];
   imports: IndexedImport[];

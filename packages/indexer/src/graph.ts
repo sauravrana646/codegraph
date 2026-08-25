@@ -1,6 +1,10 @@
+import fs from "node:fs";
+import path from "node:path";
+
 import type {
   GraphEdge,
   IndexedCallSite,
+  IndexedFile,
   IndexedSymbol,
   SymbolNeighborhood,
   WorkspaceIndex
@@ -79,6 +83,43 @@ const PYTHON_SKIP_CALLS = new Set([
   "None"
 ]);
 
+const GO_SKIP_CALLS = new Set([
+  "append",
+  "cap",
+  "close",
+  "complex",
+  "copy",
+  "delete",
+  "imag",
+  "len",
+  "make",
+  "new",
+  "panic",
+  "print",
+  "println",
+  "real",
+  "recover",
+  "min",
+  "max",
+  "clear",
+  "string",
+  "int",
+  "int64",
+  "int32",
+  "uint",
+  "uint64",
+  "float64",
+  "float32",
+  "bool",
+  "byte",
+  "rune",
+  "error",
+  "nil",
+  "true",
+  "false",
+  "iota"
+]);
+
 const COMMON_METHOD_NAMES = new Set([
   "get",
   "set",
@@ -104,7 +145,10 @@ const COMMON_METHOD_NAMES = new Set([
   "load",
   "loads",
   "dump",
-  "dumps"
+  "dumps",
+  "String",
+  "Error",
+  "Unwrap"
 ]);
 
 interface SymbolRef {
@@ -116,6 +160,12 @@ interface ResolverMaps {
   globalByName: Map<string, SymbolRef[]>;
   perFileByName: Map<string, Map<string, IndexedSymbol[]>>;
   methodsByQualName: Map<string, SymbolRef>;
+  methodsByParentAndName: Map<string, SymbolRef[]>;
+}
+
+interface GoModuleRoot {
+  modulePath: string;
+  dir: string;
 }
 
 function normalizeRel(file: string): string {
@@ -126,10 +176,21 @@ function methodQualKey(file: string, parentName: string, methodName: string): st
   return `${normalizeRel(file)}::${parentName}::${methodName}`;
 }
 
+function parentMethodKey(parentName: string, methodName: string): string {
+  return `${parentName}::${methodName}`;
+}
+
+function fileLanguage(file: IndexedFile | undefined, relativePath: string): "python" | "go" {
+  if (file?.language) {
+    return file.language;
+  }
+  return normalizeRel(relativePath).endsWith(".go") ? "go" : "python";
+}
+
 export function displaySymbolName(symbol: IndexedSymbol, file: string): string {
   if (symbol.name === "<module>") {
     const base = normalizeRel(file).split("/").pop() ?? "module";
-    return base.replace(/\.py$/, "") || "module";
+    return base.replace(/\.(py|go)$/, "") || "module";
   }
   if (symbol.parentName) {
     return `${symbol.parentName}.${symbol.name}`;
@@ -158,11 +219,11 @@ function dedupeEdges(edges: GraphEdge[], limit = 16): GraphEdge[] {
   return out;
 }
 
-function shouldSkipCallName(name: string, uniqueNameTier: boolean): boolean {
+function shouldSkipCallName(name: string, language: "python" | "go", uniqueNameTier: boolean): boolean {
   if (!name || name.length < 2) {
     return true;
   }
-  if (PYTHON_SKIP_CALLS.has(name)) {
+  if (language === "go" ? GO_SKIP_CALLS.has(name) : PYTHON_SKIP_CALLS.has(name)) {
     return true;
   }
   if (name.startsWith("__") && name.endsWith("__")) {
@@ -203,6 +264,111 @@ export function resolvePythonModuleFiles(
   }
 
   return [...new Set(candidates.map(normalizeRel))].filter((file) => Boolean(index.files[file]));
+}
+
+function discoverGoModules(index: WorkspaceIndex): GoModuleRoot[] {
+  const modules: GoModuleRoot[] = [];
+  const root = index.rootPath;
+  const seen = new Set<string>();
+  const goModRelPaths = new Set<string>(["go.mod"]);
+
+  for (const relativePath of Object.keys(index.files)) {
+    if (!relativePath.endsWith(".go")) {
+      continue;
+    }
+    let dir = pathPosixDirname(normalizeRel(relativePath));
+    for (let depth = 0; depth < 64; depth += 1) {
+      goModRelPaths.add(dir === "." ? "go.mod" : `${dir}/go.mod`);
+      if (dir === "." || !dir.includes("/")) {
+        break;
+      }
+      dir = pathPosixDirname(dir);
+    }
+  }
+
+  for (const rel of goModRelPaths) {
+    const absolute = path.join(root, rel);
+    if (!fs.existsSync(absolute)) {
+      continue;
+    }
+    try {
+      const content = fs.readFileSync(absolute, "utf8");
+      const match = content.match(/^\s*module\s+(\S+)/m);
+      if (!match?.[1]) {
+        continue;
+      }
+      const dir = pathPosixDirname(normalizeRel(rel));
+      const key = `${match[1]}::${dir}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      modules.push({ modulePath: match[1], dir });
+    } catch {
+      // ignore unreadable go.mod
+    }
+  }
+
+  return modules.sort((left, right) => right.modulePath.length - left.modulePath.length);
+}
+
+function packageDirForImport(modules: GoModuleRoot[], importPath: string): string | undefined {
+  for (const mod of modules) {
+    if (importPath === mod.modulePath) {
+      return mod.dir;
+    }
+    const prefix = `${mod.modulePath}/`;
+    if (importPath.startsWith(prefix)) {
+      const rest = importPath.slice(prefix.length);
+      return mod.dir === "." ? rest : posixJoin(mod.dir, rest);
+    }
+  }
+  return undefined;
+}
+
+export function resolveGoPackageFiles(
+  index: WorkspaceIndex,
+  fromFile: string,
+  importPath: string,
+  options?: { includeTests?: boolean }
+): string[] {
+  const includeTests = options?.includeTests === true;
+  const modules = discoverGoModules(index);
+  const packageDir = packageDirForImport(modules, importPath);
+  if (!packageDir) {
+    return [];
+  }
+
+  const normalizedDir = normalizeRel(packageDir);
+  const matches: string[] = [];
+  for (const file of Object.values(index.files)) {
+    const rel = normalizeRel(file.relativePath);
+    if (!rel.endsWith(".go")) {
+      continue;
+    }
+    if (!includeTests && /_test\.go$/i.test(rel)) {
+      continue;
+    }
+    const dir = pathPosixDirname(rel);
+    if (dir === normalizedDir || (normalizedDir === "." && !rel.includes("/"))) {
+      matches.push(rel);
+    }
+  }
+
+  const fromDir = pathPosixDirname(normalizeRel(fromFile));
+  return matches.sort((left, right) => {
+    const leftSame = pathPosixDirname(left) === fromDir ? 0 : 1;
+    const rightSame = pathPosixDirname(right) === fromDir ? 0 : 1;
+    return leftSame - rightSame || left.localeCompare(right);
+  });
+}
+
+function sameGoPackageFiles(index: WorkspaceIndex, fromFile: string): string[] {
+  const from = normalizeRel(fromFile);
+  const fromDir = pathPosixDirname(from);
+  return Object.keys(index.files)
+    .map(normalizeRel)
+    .filter((rel) => rel.endsWith(".go") && !/_test\.go$/i.test(rel) && pathPosixDirname(rel) === fromDir);
 }
 
 function pathPosixDirname(file: string): string {
@@ -268,6 +434,7 @@ function buildResolverMaps(index: WorkspaceIndex): ResolverMaps {
   const globalByName = new Map<string, SymbolRef[]>();
   const perFileByName = new Map<string, Map<string, IndexedSymbol[]>>();
   const methodsByQualName = new Map<string, SymbolRef>();
+  const methodsByParentAndName = new Map<string, SymbolRef[]>();
 
   for (const file of Object.values(index.files)) {
     const fromFile = normalizeRel(file.relativePath);
@@ -286,19 +453,19 @@ function buildResolverMaps(index: WorkspaceIndex): ResolverMaps {
           file: fromFile,
           symbol
         });
+        const parentKey = parentMethodKey(symbol.parentName, symbol.name);
+        const parentList = methodsByParentAndName.get(parentKey) ?? [];
+        parentList.push({ file: fromFile, symbol });
+        methodsByParentAndName.set(parentKey, parentList);
       }
     }
     perFileByName.set(fromFile, byName);
   }
 
-  return { globalByName, perFileByName, methodsByQualName };
+  return { globalByName, perFileByName, methodsByQualName, methodsByParentAndName };
 }
 
-function lookupFileSymbols(
-  maps: ResolverMaps,
-  file: string,
-  name: string
-): IndexedSymbol[] {
+function lookupFileSymbols(maps: ResolverMaps, file: string, name: string): IndexedSymbol[] {
   return maps.perFileByName.get(normalizeRel(file))?.get(name) ?? [];
 }
 
@@ -321,6 +488,13 @@ function pickLocalSymbol(
     }
   }
 
+  if (receiver && enclosing.parentName) {
+    const methods = named.filter((symbol) => symbol.parentName === enclosing.parentName);
+    if (methods.length === 1 && methods[0]) {
+      return methods[0];
+    }
+  }
+
   const topLevel = named.filter((symbol) => !symbol.parentName && symbol.name !== "<module>");
   if (topLevel.length === 1 && topLevel[0]) {
     return topLevel[0];
@@ -334,6 +508,17 @@ function pickLocalSymbol(
   return undefined;
 }
 
+function resolveModuleFilesForLanguage(
+  index: WorkspaceIndex,
+  fromFile: string,
+  module: string,
+  language: "python" | "go"
+): string[] {
+  return language === "go"
+    ? resolveGoPackageFiles(index, fromFile, module)
+    : resolvePythonModuleFiles(index, fromFile, module);
+}
+
 function resolveImportedSymbol(
   index: WorkspaceIndex,
   maps: ResolverMaps,
@@ -344,6 +529,7 @@ function resolveImportedSymbol(
   if (!origin) {
     return undefined;
   }
+  const language = fileLanguage(origin, fromFile);
 
   const imported: SymbolRef[] = [];
   const receiver = call.receiver;
@@ -359,10 +545,11 @@ function resolveImportedSymbol(
       continue;
     }
 
-    for (const moduleFile of resolvePythonModuleFiles(index, fromFile, item.module)) {
+    for (const moduleFile of resolveModuleFilesForLanguage(index, fromFile, item.module, language)) {
       if (receiver && (item.kind === "import" ? item.alias === receiver || item.names.includes(receiver) : false)) {
         const methods = lookupFileSymbols(maps, moduleFile, call.name).filter((symbol) => Boolean(symbol.parentName));
-        for (const symbol of methods) {
+        const funcs = lookupFileSymbols(maps, moduleFile, call.name).filter((symbol) => !symbol.parentName);
+        for (const symbol of methods.length ? methods : funcs) {
           imported.push({ file: moduleFile, symbol });
         }
         continue;
@@ -385,6 +572,33 @@ function resolveImportedSymbol(
   return undefined;
 }
 
+function resolveSamePackageGo(
+  index: WorkspaceIndex,
+  maps: ResolverMaps,
+  fromFile: string,
+  call: IndexedCallSite,
+  enclosing: IndexedSymbol
+): GraphEdge | undefined {
+  const packageFiles = sameGoPackageFiles(index, fromFile);
+  const matches: SymbolRef[] = [];
+
+  for (const packageFile of packageFiles) {
+    if (packageFile === normalizeRel(fromFile)) {
+      continue;
+    }
+    const named = lookupFileSymbols(maps, packageFile, call.name);
+    const picked = pickLocalSymbol(named, call, enclosing);
+    if (picked) {
+      matches.push({ file: packageFile, symbol: picked });
+    }
+  }
+
+  if (matches.length === 1 && matches[0]) {
+    return toEdge(matches[0].file, matches[0].symbol, 0.9, "same-file");
+  }
+  return undefined;
+}
+
 function resolveCallSite(
   index: WorkspaceIndex,
   maps: ResolverMaps,
@@ -392,7 +606,10 @@ function resolveCallSite(
   enclosing: IndexedSymbol,
   call: IndexedCallSite
 ): GraphEdge | undefined {
-  if (shouldSkipCallName(call.name, false)) {
+  const origin = index.files[normalizeRel(fromFile)];
+  const language = fileLanguage(origin, fromFile);
+
+  if (shouldSkipCallName(call.name, language, false)) {
     return undefined;
   }
 
@@ -404,9 +621,28 @@ function resolveCallSite(
     }
   }
 
+  if (language === "go" && receiver && enclosing.parentName) {
+    const localMethod = maps.methodsByQualName.get(methodQualKey(fromFile, enclosing.parentName, call.name));
+    if (localMethod) {
+      return toEdge(localMethod.file, localMethod.symbol, 0.95, "same-file");
+    }
+    const packageMethods = maps.methodsByParentAndName.get(parentMethodKey(enclosing.parentName, call.name)) ?? [];
+    const samePackage = packageMethods.filter((item) => sameGoPackageFiles(index, fromFile).includes(item.file));
+    if (samePackage.length === 1 && samePackage[0]) {
+      return toEdge(samePackage[0].file, samePackage[0].symbol, 0.9, "same-file");
+    }
+  }
+
   const local = pickLocalSymbol(lookupFileSymbols(maps, fromFile, call.name), call, enclosing);
   if (local) {
     return toEdge(fromFile, local, 0.95, "same-file");
+  }
+
+  if (language === "go") {
+    const samePackage = resolveSamePackageGo(index, maps, fromFile, call, enclosing);
+    if (samePackage) {
+      return samePackage;
+    }
   }
 
   const imported = resolveImportedSymbol(index, maps, fromFile, call);
@@ -414,7 +650,7 @@ function resolveCallSite(
     return imported;
   }
 
-  if (shouldSkipCallName(call.name, true)) {
+  if (shouldSkipCallName(call.name, language, true)) {
     return undefined;
   }
 
@@ -605,9 +841,7 @@ export function formatNeighborhoodLines(neighborhood: SymbolNeighborhood): strin
   if (neighborhood.related.length === 0) {
     lines.push("- (none)");
   } else {
-    lines.push(
-      ...neighborhood.related.map((edge) => `- ${edge.file}:${edge.line} (${edge.name})`)
-    );
+    lines.push(...neighborhood.related.map((edge) => `- ${edge.file}:${edge.line} (${edge.name})`));
   }
 
   return lines;

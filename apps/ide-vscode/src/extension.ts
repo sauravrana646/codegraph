@@ -127,13 +127,24 @@ async function rememberIndexResult(
   result: Awaited<ReturnType<typeof ensureWorkspaceIndex>>
 ): Promise<void> {
   watchIndexFile(result.index.rootPath);
-  if (!warnedRegexFallback && (result.parseRegex > 0 || result.astUnavailable)) {
+  if (
+    !warnedRegexFallback &&
+    (result.parseRegex > 0 || result.astUnavailable || result.goAstUnavailable)
+  ) {
     warnedRegexFallback = true;
     const detail = result.astUnavailable
       ? "Python AST parser is unavailable; falling back to regex (no call graph)."
-      : `${result.parseRegex} file(s) used regex fallback instead of the Python AST parser.`;
+      : result.goAstUnavailable
+        ? "Go AST parser is unavailable (install Go toolchain); falling back to regex for .go files."
+        : `${result.parseRegex} file(s) used regex fallback instead of the language AST parser.`;
     logCodegraph(detail, true);
     void vscode.window.showWarningMessage(`Codegraph: ${detail}`);
+  }
+  if (result.truncated > 0) {
+    logCodegraph(
+      `Index truncated: ${result.truncated} source file(s) beyond the ${result.total + result.truncated} cap were skipped.`,
+      true
+    );
   }
 }
 
@@ -195,18 +206,38 @@ function symbolKeyFromEditor(
   return `${request.rootPath}|${request.filePath}|:${request.line}`;
 }
 
-function liveExplainConfig(): { debounceMs: number; pythonOnly: boolean } {
+function liveExplainConfig(): { debounceMs: number; languages: Set<string>; pythonOnly: boolean } {
   const cfg = vscode.workspace.getConfiguration("codegraph.liveExplain");
   const access = modelAccessConfig();
   const agentMode = access.useBuiltInAgent && !access.useApiKeyProvider;
   const configured = Number(cfg.get<number>("debounceMs") ?? (agentMode ? 900 : 450));
   const fallback = agentMode ? 900 : 450;
   const debounceMs = Number.isFinite(configured) ? configured : fallback;
+  const configuredLanguages = cfg.get<string[]>("languages");
+  const pythonOnly = cfg.get<boolean>("pythonOnly") === true;
+  const languagesInspect = cfg.inspect<string[]>("languages");
+  const languagesUnset =
+    languagesInspect?.globalValue === undefined &&
+    languagesInspect?.workspaceValue === undefined &&
+    languagesInspect?.workspaceFolderValue === undefined;
+  const languages = new Set(
+    (pythonOnly && languagesUnset
+      ? ["python"]
+      : Array.isArray(configuredLanguages) && configuredLanguages.length > 0
+        ? configuredLanguages
+        : ["python", "go"]
+    ).map((item) => String(item).toLowerCase())
+  );
   return {
     // Agent auto-submit needs a bit more settle time between cursor moves.
     debounceMs: Math.min(5000, Math.max(agentMode ? 700 : 100, debounceMs)),
-    pythonOnly: cfg.get<boolean>("pythonOnly") !== false
+    languages,
+    pythonOnly
   };
+}
+
+function isLiveExplainLanguage(languageId: string): boolean {
+  return liveExplainConfig().languages.has(languageId.toLowerCase());
 }
 
 function updateLiveExplainStatusBar(): void {
@@ -306,16 +337,19 @@ async function setLiveExplainEnabled(enabled: boolean, announce = true): Promise
     const request = getActiveRequest({ quiet: true });
     const editor = vscode.window.activeTextEditor;
     if (!request) {
-      logCodegraph("Live ON but no active workspace editor — open a Python file in a folder workspace.", true);
+      logCodegraph("Live ON but no active workspace editor — open a Python/Go file in a folder workspace.", true);
       void vscode.window.showWarningMessage(
-        "Codegraph Live is ON, but no workspace file is active. Open a .py file inside a project folder."
+        "Codegraph Live is ON, but no workspace file is active. Open a .py or .go file inside a project folder."
       );
       return;
     }
-    if (editor && liveExplainConfig().pythonOnly && editor.document.languageId !== "python") {
-      logCodegraph(`Live ON but language is '${editor.document.languageId}' (pythonOnly=true).`, true);
+    if (editor && !isLiveExplainLanguage(editor.document.languageId)) {
+      logCodegraph(
+        `Live ON but language is '${editor.document.languageId}' (allowed=${[...liveExplainConfig().languages].join(",")}).`,
+        true
+      );
       void vscode.window.showWarningMessage(
-        "Codegraph Live is ON, but the active file is not Python. Open a .py file."
+        "Codegraph Live is ON, but the active file language is not enabled. Open a Python or Go file (or update codegraph.liveExplain.languages)."
       );
       return;
     }
@@ -341,14 +375,14 @@ function scheduleLiveExplain(): void {
     return;
   }
 
-  const { debounceMs, pythonOnly } = liveExplainConfig();
+  const { debounceMs } = liveExplainConfig();
   const editor = vscode.window.activeTextEditor;
 
   if (!editor) {
     return;
   }
 
-  if (pythonOnly && editor.document.languageId !== "python") {
+  if (!isLiveExplainLanguage(editor.document.languageId)) {
     return;
   }
 
@@ -407,7 +441,23 @@ export function activate(context: vscode.ExtensionContext): void {
     ? bundledParser
     : monorepoParser;
 
-  logCodegraph(`Activated. parser=${process.env.CODEGRAPH_PYTHON_PARSER}`, true);
+  const bundledGoSource = path.join(context.extensionPath, "go_symbol_parser.go");
+  const monorepoGoSource = path.join(
+    context.extensionPath,
+    "..",
+    "..",
+    "packages",
+    "language-intelligence",
+    "go_symbol_parser.go"
+  );
+  process.env.CODEGRAPH_GO_PARSER_SOURCE = fs.existsSync(bundledGoSource)
+    ? bundledGoSource
+    : monorepoGoSource;
+
+  logCodegraph(
+    `Activated. parser=${process.env.CODEGRAPH_PYTHON_PARSER} goParserSource=${process.env.CODEGRAPH_GO_PARSER_SOURCE}`,
+    true
+  );
   void migrateAndLoadApiKey(context).then(() => {
     void warmWorkspaceIndex();
   });
@@ -592,11 +642,11 @@ export function activate(context: vscode.ExtensionContext): void {
       const result = await ensureWorkspaceIndex(folder.uri.fsPath, { force: true });
       await rememberIndexResult(result);
       logCodegraph(
-        `Index rebuilt: files=${result.total} changed=${result.changed} removed=${result.removed} skipped=${result.skipped} failed=${result.failed} path=${result.storagePath}`,
+        `Index rebuilt: files=${result.total} changed=${result.changed} removed=${result.removed} skipped=${result.skipped} failed=${result.failed} truncated=${result.truncated} path=${result.storagePath}`,
         true
       );
       void vscode.window.showInformationMessage(
-        `Codegraph indexed ${result.total} Python files (${result.changed} parsed). Rebuild Local Index after upgrades that change the index schema.`
+        `Codegraph indexed ${result.total} Python/Go files (${result.changed} parsed${result.truncated ? `, ${result.truncated} truncated` : ""}). Rebuild Local Index after upgrades that change the index schema.`
       );
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -606,7 +656,7 @@ export function activate(context: vscode.ExtensionContext): void {
   });
 
   const saveListener = vscode.workspace.onDidSaveTextDocument((document) => {
-    if (document.languageId !== "python") {
+    if (document.languageId !== "python" && document.languageId !== "go") {
       return;
     }
     const folder = vscode.workspace.getWorkspaceFolder(document.uri);
@@ -725,7 +775,7 @@ async function warmWorkspaceIndex(): Promise<void> {
       const result = await ensureWorkspaceIndex(folder.uri.fsPath);
       await rememberIndexResult(result);
       logCodegraph(
-        `Local index ready (${folder.name}): ${result.total} Python files (${result.changed} parsed, ${result.unchanged} cached)`
+        `Local index ready (${folder.name}): ${result.total} Python/Go files (${result.changed} parsed, ${result.unchanged} cached${result.truncated ? `, ${result.truncated} truncated` : ""})`
       );
     } catch (error) {
       logCodegraph(`Local index skipped (${folder.name}): ${error instanceof Error ? error.message : String(error)}`);

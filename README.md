@@ -14,13 +14,14 @@ This repository now contains the first usable local MVP slice:
 - `packages/agent-tools` — shared tool runners used by runtime and MCP
 - `packages/workspace` — workspace identity and safe path helpers
 - `packages/security` — secret scanning/redaction and symlink containment checks
-- `packages/language-intelligence` — AST-backed Python symbol parsing through a safe `python3` bridge with fallback behavior
+- `packages/language-intelligence` — AST-backed Python + experimental Go symbol parsing (`python3` / `go` bridges with regex fallback)
 - `packages/model-gateway` — optional OpenAI-compatible provider enrichment over deterministic context
-- `packages/core` — deterministic Python-aware selection analysis, definition discovery, reference search, scope resolution, and explanation assembly
+- `packages/core` — deterministic selection analysis, definition discovery, reference search, scope resolution, and explanation assembly
 - `docs/` — PRD, TDD, implementation plan, and AI-ready backlog
-- `examples/demo.py` — sample Python file for local smoke testing
+- `examples/demo.py` / `examples/two_classes.py` — sample Python files for local smoke testing
+- `examples/go-mini` — small Go module fixture (package imports + method receivers)
 
-This is not the full long-term product yet, but it is now usable as a local deterministic explainer for Python-oriented repository exploration.
+This is not the full long-term product yet, but it is now usable as a local deterministic explainer for Python and experimental Go repository exploration.
 
 ## Requirements
 
@@ -332,7 +333,8 @@ Useful settings:
 ```text
 codegraph.liveExplain.enabled              # Live Explain on/off (also toggled from status bar)
 codegraph.liveExplain.debounceMs           # delay after cursor moves (default 450)
-codegraph.liveExplain.pythonOnly           # only auto-explain Python (default on)
+codegraph.liveExplain.languages            # language IDs for Live Explain (default python, go)
+codegraph.liveExplain.pythonOnly           # deprecated; if true and languages unset, Python only
 codegraph.liveExplain.autoSubmitAgent      # auto-send slim prompt to Agent (default on)
 codegraph.modelAccess.useBuiltInAgent      # Agent path (default on)
 codegraph.modelAccess.useApiKeyProvider    # API key path (default off)
