@@ -122,7 +122,7 @@ async function main(): Promise<void> {
   registerTool(
     "explain_selection",
     {
-      description: "Bounded source window for a Python target (no AST/LSP dump).",
+      description: "Bounded source window for a Python/Go target (no AST/LSP dump).",
       inputSchema: locationShape
     },
     async (args) => envelopeResult(await runExplainSelectionTool(asToolRequest(args as LocationArgs)))
@@ -176,7 +176,7 @@ async function main(): Promise<void> {
   registerTool(
     "search_codebase",
     {
-      description: "Search indexed Python symbol names (local, no LLM).",
+      description: "Search indexed Python/Go symbol names (local, no LLM).",
       inputSchema: searchShape
     },
     async (args) => {
@@ -214,7 +214,7 @@ async function main(): Promise<void> {
   registerTool(
     "ensure_index",
     {
-      description: "Build or incrementally refresh the local Python repo index.",
+      description: "Build or incrementally refresh the local Python/Go workspace index.",
       inputSchema: rootShape
     },
     async (args) => {

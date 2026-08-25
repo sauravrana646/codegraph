@@ -1,10 +1,10 @@
 {
   "name": "codegraph-ide-vscode",
   "displayName": "Codegraph",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "private": true,
   "publisher": "codegraph",
-  "description": "Python-first codebase intelligence extension for VS Code and Cursor.",
+  "description": "Python-first codebase intelligence with experimental Go indexing for VS Code and Cursor.",
   "license": "MIT",
   "icon": "media/icon.png",
   "type": "commonjs",
@@ -102,8 +102,16 @@
         },
         "codegraph.liveExplain.pythonOnly": {
           "type": "boolean",
-          "default": true,
-          "description": "Only auto-explain when the active editor is a Python file."
+          "default": false,
+          "description": "Deprecated. When true and languages is empty, only auto-explain Python. Prefer codegraph.liveExplain.languages."
+        },
+        "codegraph.liveExplain.languages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": ["python", "go"],
+          "description": "Language IDs that Live Explain will auto-run for (e.g. python, go)."
         },
         "codegraph.liveExplain.writeAgentBridge": {
           "type": "boolean",
@@ -221,6 +229,8 @@
     "media/icon-256.png",
     "media/icon.svg",
     "python_symbol_parser.py",
+    "go_symbol_parser.go",
+    "go.mod",
     "README.md",
     "LICENSE"
   ]

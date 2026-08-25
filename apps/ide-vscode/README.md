@@ -2,7 +2,7 @@
 
 ![Codegraph icon](media/icon-256.png)
 
-Importable IDE extension for local Python-first code understanding.
+Importable IDE extension for local Python-first code understanding (experimental Go indexing included).
 
 ## Install from VSIX
 
@@ -41,7 +41,7 @@ Turn Live ON once, then **only move your cursor** — no typing, no Enter.
 
 **API key mode:** pick a provider (OpenRouter, OpenAI, Groq, Gemini, …); base URL is set automatically. You only enter **API key** + **model**. The key is stored in VS Code **Secret Storage**, not `.vscode/settings.json`. Enrichment shows in the Codegraph panel.
 
-After upgrading the extension, run **Codegraph: Rebuild Local Index** (index schema v3: methods are class-qualified).
+After upgrading the extension, run **Codegraph: Rebuild Local Index** (index schema v4: Python + experimental Go, methods are type-qualified).
 
 On macOS, auto-submit briefly uses the clipboard and restores it as soon as paste completes. Keep Cursor focused while the prompt is sent.
 
@@ -51,7 +51,8 @@ Settings:
 
 - `codegraph.liveExplain.enabled` — persisted on/off
 - `codegraph.liveExplain.debounceMs` — delay before refresh (default 450)
-- `codegraph.liveExplain.pythonOnly` — only auto-explain Python editors (default on)
+- `codegraph.liveExplain.languages` — language IDs for Live Explain (default `python`, `go`)
+- `codegraph.liveExplain.pythonOnly` — deprecated; when true and `languages` is unset, only Python
 - `codegraph.liveExplain.writeAgentBridge` — write `~/.cursor/codegraph/` bridge files (default on)
 - `codegraph.liveExplain.compatLearnCodebase` — also mirror to `~/.cursor/learn-codebase/` (default on)
 - `codegraph.explain.depth` — short / standard / deep
@@ -63,9 +64,15 @@ Settings:
 - `Codegraph: Enrich & Explain with Agent` — hand off grounded context to Cursor/Claude agent
 - `Codegraph: Configure API Provider` — provider dropdown + API key + model presets + connection test
 - `Codegraph: Test API Connection`
-- `Codegraph: Repo Brief` — first-look map of the Python workspace
+- `Codegraph: Repo Brief` — first-look map of the Python/Go workspace
 - `Codegraph: Set Explain Depth` — short / standard / deep
-- `Codegraph: Rebuild Local Index` — rebuild the Python symbol + call-graph index used for Agent neighborhood and tools
+- `Codegraph: Rebuild Local Index` — rebuild the Python/Go symbol + call-graph index used for Agent neighborhood and tools
+
+### Go support (experimental)
+
+- Indexes `.go` files with the official `go/ast` helper when a Go toolchain is on `PATH` (regex fallback otherwise).
+- Resolves package imports via `go.mod` module paths; skips `vendor/` and `third_party/`.
+- Rebuild the local index after enabling Go or upgrading to schema v4.
 
 ### Model access
 

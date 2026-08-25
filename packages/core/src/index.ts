@@ -633,6 +633,8 @@ export interface RepoBriefSymbol {
 export interface RepoBrief {
   rootPath: string;
   pythonFileCount: number;
+  goFileCount: number;
+  fileCount: number;
   topLevelPackages: string[];
   entrypoints: string[];
   notableSymbols: RepoBriefSymbol[];
@@ -640,7 +642,7 @@ export interface RepoBrief {
 }
 
 /**
- * Lightweight first-look map of a Python workspace (no narrative dump).
+ * Lightweight first-look map of a Python/Go workspace (no narrative dump).
  */
 export async function buildRepoBrief(rootPath: string): Promise<RepoBrief> {
   const workspace = createWorkspaceSummary(rootPath);
@@ -648,8 +650,8 @@ export async function buildRepoBrief(rootPath: string): Promise<RepoBrief> {
   const overview = buildProjectOverview(index);
 
   const summaryLines = [
-    `Python files indexed: ${overview.pythonFileCount}`,
-    `Symbols: ${overview.symbolCount} (${overview.classCount} classes, ${overview.functionCount} functions)`,
+    `Files indexed: ${overview.fileCount} (Python ${overview.pythonFileCount}, Go ${overview.goFileCount})`,
+    `Symbols: ${overview.symbolCount} (${overview.classCount} classes/types, ${overview.functionCount} functions)`,
     overview.topLevelPackages.length
       ? `Top-level packages/dirs: ${overview.topLevelPackages.join(", ")}`
       : "Top-level packages/dirs: (flat layout)",
@@ -665,6 +667,8 @@ export async function buildRepoBrief(rootPath: string): Promise<RepoBrief> {
   return {
     rootPath: workspace.rootPath,
     pythonFileCount: overview.pythonFileCount,
+    goFileCount: overview.goFileCount,
+    fileCount: overview.fileCount,
     topLevelPackages: overview.topLevelPackages,
     entrypoints: overview.entrypoints,
     notableSymbols: overview.notableSymbols,

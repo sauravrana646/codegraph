@@ -5,6 +5,7 @@ import {
   listIndexedFiles,
   lookupNeighborhood,
   readWorkspaceIndex,
+  resolveGoPackageFiles,
   resolvePythonModuleFiles,
   type GraphEdge,
   type IndexedSymbol,
@@ -18,11 +19,14 @@ import { createWorkspaceId } from "@codegraph/workspace";
 
 export interface ProjectOverview {
   pythonFileCount: number;
+  goFileCount: number;
+  fileCount: number;
   symbolCount: number;
   classCount: number;
   functionCount: number;
   parseAst: number;
   parseRegex: number;
+  truncatedHint?: string;
   topLevelPackages: string[];
   entrypoints: string[];
   notableSymbols: Array<{ file: string; line: number; name: string; kind: string }>;
@@ -81,16 +85,24 @@ export function buildProjectOverview(index: WorkspaceIndex): ProjectOverview {
   let functionCount = 0;
   let parseAst = 0;
   let parseRegex = 0;
+  let pythonFileCount = 0;
+  let goFileCount = 0;
   const notable: ProjectOverview["notableSymbols"] = [];
 
   for (const file of files) {
-    if (file.parseSource === "regex_fallback") {
+    const language = file.language ?? (file.relativePath.endsWith(".go") ? "go" : "python");
+    if (language === "go") {
+      goFileCount += 1;
+    } else {
+      pythonFileCount += 1;
+    }
+    if (file.parseSource === "regex_fallback" || file.parseSource === "go_regex_fallback") {
       parseRegex += 1;
     } else {
       parseAst += 1;
     }
     const top = normalizeRel(file.relativePath).split("/")[0];
-    if (top && !top.startsWith(".") && top.endsWith(".py") === false) {
+    if (top && !top.startsWith(".") && !top.endsWith(".py") && !top.endsWith(".go")) {
       packages.add(top);
     }
     for (const symbol of file.symbols) {
@@ -121,18 +133,24 @@ export function buildProjectOverview(index: WorkspaceIndex): ProjectOverview {
     "asgi.py",
     "__main__.py",
     "cli.py",
-    "server.py"
+    "server.py",
+    "main.go"
   ]);
   const entrypoints = files
     .map((file) => normalizeRel(file.relativePath))
     .filter((file) => {
       const base = file.split("/").pop() ?? "";
-      return entrypointHints.has(base);
+      if (entrypointHints.has(base)) {
+        return true;
+      }
+      return /(?:^|\/)cmd\/[^/]+\/main\.go$/.test(file);
     })
     .slice(0, 12);
 
   return {
-    pythonFileCount: files.length,
+    pythonFileCount,
+    goFileCount,
+    fileCount: files.length,
     symbolCount: classCount + functionCount,
     classCount,
     functionCount,
@@ -200,8 +218,13 @@ export function preferImportedDefinitions(
     if (!item.names.includes(symbolName) && item.alias !== symbolName && !item.names.includes("*")) {
       continue;
     }
-    for (const resolved of resolvePythonModuleFiles(index, originFile, item.module)) {
-      importedFiles.add(resolved);
+    const language = origin.language ?? (originFile.endsWith(".go") ? "go" : "python");
+    const resolved =
+      language === "go"
+        ? resolveGoPackageFiles(index, originFile, item.module)
+        : resolvePythonModuleFiles(index, originFile, item.module);
+    for (const candidate of resolved) {
+      importedFiles.add(candidate);
     }
   }
 

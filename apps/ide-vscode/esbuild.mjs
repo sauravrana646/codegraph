@@ -24,6 +24,14 @@ cpSync(
   path.join(__dirname, "..", "..", "packages", "language-intelligence", "python_symbol_parser.py"),
   path.join(__dirname, "python_symbol_parser.py")
 );
+cpSync(
+  path.join(__dirname, "..", "..", "packages", "language-intelligence", "go_symbol_parser.go"),
+  path.join(__dirname, "go_symbol_parser.go")
+);
+cpSync(
+  path.join(__dirname, "..", "..", "packages", "language-intelligence", "go.mod"),
+  path.join(__dirname, "go.mod")
+);
 
 console.log(`Bundled extension -> ${outfile}`);
-console.log("Copied python_symbol_parser.py beside extension package root");
+console.log("Copied python_symbol_parser.py and go_symbol_parser.go beside extension package root");
