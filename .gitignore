@@ -1,3 +1,23 @@
+node_modules
+dist
+out
+artifacts
+.DS_Store
+.cursor/*
+!.cursor/
+!.cursor/skills/
+!.cursor/skills/**
+.claude/*
+!.claude/
+!.claude/skills/
+!.claude/skills/**
+.agents/*
+!.agents/
+!.agents/skills/
+!.agents/skills/**
+*.tsbuildinfo
+*.vsix
+apps/ide-vscode/python_symbol_parser.py
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -200,6 +220,7 @@ cython_debug/
 #   and can be added to the global gitignore or merged into this file. However, if you prefer, 
 #   you could uncomment the following to ignore the entire vscode folder
 # .vscode/
+.vscode/settings.json
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
 

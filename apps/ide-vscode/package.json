@@ -1,0 +1,237 @@
+{
+  "name": "codegraph-ide-vscode",
+  "displayName": "Codegraph",
+  "version": "0.1.18",
+  "private": true,
+  "publisher": "codegraph",
+  "description": "Python-first codebase intelligence with experimental Go indexing for VS Code and Cursor.",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "type": "commonjs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sauravrana646/codegraph.git"
+  },
+  "engines": {
+    "vscode": "^1.105.0"
+  },
+  "categories": [
+    "Other",
+    "Programming Languages",
+    "Machine Learning"
+  ],
+  "keywords": [
+    "python",
+    "codebase intelligence",
+    "explain code",
+    "find references",
+    "cursor",
+    "codegraph"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:codegraph.explainSelection",
+    "onCommand:codegraph.askCursorAgent",
+    "onCommand:codegraph.toggleLiveExplain",
+    "onCommand:codegraph.diagnoseLiveExplain",
+    "onCommand:codegraph.configureApiProvider",
+    "onCommand:codegraph.testApiConnection",
+    "onCommand:codegraph.repoBrief",
+    "onCommand:codegraph.setExplainDepth",
+    "onCommand:codegraph.rebuildIndex"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "codegraph.toggleLiveExplain",
+        "title": "Codegraph: Toggle Live Explain Mode"
+      },
+      {
+        "command": "codegraph.diagnoseLiveExplain",
+        "title": "Codegraph: Diagnose Live Explain"
+      },
+      {
+        "command": "codegraph.explainSelection",
+        "title": "Codegraph: Explain Selection"
+      },
+      {
+        "command": "codegraph.askCursorAgent",
+        "title": "Codegraph: Enrich & Explain with Agent"
+      },
+      {
+        "command": "codegraph.configureApiProvider",
+        "title": "Codegraph: Configure API Provider"
+      },
+      {
+        "command": "codegraph.testApiConnection",
+        "title": "Codegraph: Test API Connection"
+      },
+      {
+        "command": "codegraph.repoBrief",
+        "title": "Codegraph: Repo Brief"
+      },
+      {
+        "command": "codegraph.setExplainDepth",
+        "title": "Codegraph: Set Explain Depth"
+      },
+      {
+        "command": "codegraph.rebuildIndex",
+        "title": "Codegraph: Rebuild Local Index"
+      }
+    ],
+    "configuration": {
+      "title": "Codegraph",
+      "properties": {
+        "codegraph.liveExplain.enabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "When on, Codegraph auto-explains the current cursor/selection as you navigate (no Command Palette each time). Toggle via **Codegraph: Toggle Live Explain Mode** or the status bar."
+        },
+        "codegraph.liveExplain.debounceMs": {
+          "type": "number",
+          "default": 900,
+          "minimum": 100,
+          "maximum": 5000,
+          "description": "Delay after cursor/selection changes before live explain runs (higher is better for Agent auto-submit)."
+        },
+        "codegraph.liveExplain.autoSubmitAgent": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "In Agent mode, automatically open/focus Agent chat, paste grounded context, and submit (no manual Enter). On macOS this uses Accessibility automation."
+        },
+        "codegraph.liveExplain.pythonOnly": {
+          "type": "boolean",
+          "default": false,
+          "description": "Deprecated. When true and languages is empty, only auto-explain Python. Prefer codegraph.liveExplain.languages."
+        },
+        "codegraph.liveExplain.languages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": ["python", "go"],
+          "description": "Language IDs that Live Explain will auto-run for (e.g. python, go)."
+        },
+        "codegraph.liveExplain.writeAgentBridge": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When Live Explain is on, write cursor state to `~/.cursor/codegraph/` (`enabled`, `state.json`, `wake.log`, `pending-prompt.md`) so a watcher/skill can wake Cursor Agent — same pattern as learn-codebase."
+        },
+        "codegraph.liveExplain.compatLearnCodebase": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Also mirror bridge files to `~/.cursor/learn-codebase/` so an existing learn-codebase watcher keeps working."
+        },
+        "codegraph.modelAccess.useBuiltInAgent": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Use **built-in Cursor/Claude agent** for generative enrichment. Live Explain fills the same sections (summary, what it does, purpose/use, how, usages) via the agent bridge/watcher."
+        },
+        "codegraph.modelAccess.useApiKeyProvider": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Use an **API key provider** for in-panel enrichment of the same sections during Live Explain and one-shot Explain."
+        },
+        "codegraph.explain.depth": {
+          "type": "string",
+          "default": "standard",
+          "enum": ["short", "standard", "deep"],
+          "enumDescriptions": [
+            "Short purpose only",
+            "Purpose + fields + notes",
+            "Deep: use case, concrete example, why-not-simpler alternatives, and why this design is better"
+          ],
+          "markdownDescription": "How detailed Live Explain / Agent / API enrichment answers should be. Toggle from the **CG Depth** status bar item (left status bar)."
+        },
+        "codegraph.modelAccess.autoEnrichOnExplain": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "After a **manual** Explain Selection, auto-hand off to Cursor/Claude agent. Does **not** fire on every Live Explain cursor move (that would spam chat)."
+        },
+        "codegraph.enrichment.enabled": {
+          "type": "boolean",
+          "default": false,
+          "deprecationMessage": "Prefer codegraph.modelAccess.useApiKeyProvider.",
+          "description": "Legacy: enable optional model-backed explanation enrichment."
+        },
+        "codegraph.enrichment.preferIdeHost": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "When API key mode is on, try IDE host language models (`vscode.lm`) **before** the configured API provider. Leave off to always use your selected provider (OpenRouter, OpenAI, etc.)."
+        },
+        "codegraph.enrichment.provider": {
+          "type": "string",
+          "default": "openrouter",
+          "enum": [
+            "openai",
+            "openrouter",
+            "groq",
+            "together",
+            "fireworks",
+            "deepseek",
+            "mistral",
+            "google",
+            "custom"
+          ],
+          "enumDescriptions": [
+            "OpenAI — https://api.openai.com/v1",
+            "OpenRouter — Claude, Gemini, OpenAI, and more",
+            "Groq",
+            "Together AI",
+            "Fireworks",
+            "DeepSeek",
+            "Mistral",
+            "Google Gemini (OpenAI-compatible)",
+            "Custom OpenAI-compatible base URL"
+          ],
+          "markdownDescription": "API enrichment provider. Base URL is set automatically (except **Custom**)."
+        },
+        "codegraph.enrichment.apiKey": {
+          "type": "string",
+          "default": "",
+          "deprecationMessage": "Stored in Secret Storage. This setting is ignored after migration and should not be committed.",
+          "markdownDescription": "Deprecated. The API key is stored in VS Code Secret Storage, not workspace settings."
+        },
+        "codegraph.enrichment.model": {
+          "type": "string",
+          "default": "openai/gpt-4o-mini",
+          "markdownDescription": "Model id for the selected provider (e.g. `openai/gpt-4o-mini`, `anthropic/claude-3.5-sonnet`, `gemini-2.0-flash`)."
+        },
+        "codegraph.enrichment.baseUrl": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Only needed when provider is **Custom**. Known providers set this automatically."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "bundle": "node ./esbuild.mjs",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "package": "npm run bundle && mkdir -p ../../artifacts && npx --yes @vscode/vsce package --no-dependencies --out ../../artifacts/codegraph-extension.vsix"
+  },
+  "dependencies": {
+    "@codegraph/core": "0.1.0",
+    "@codegraph/model-gateway": "0.1.0",
+    "@codegraph/security": "0.1.0",
+    "@codegraph/workspace": "0.1.0"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.105.0",
+    "esbuild": "^0.25.9"
+  },
+  "files": [
+    "dist/extension.js",
+    "media/icon.png",
+    "media/icon-256.png",
+    "media/icon.svg",
+    "python_symbol_parser.py",
+    "go_symbol_parser.go",
+    "go.mod",
+    "README.md",
+    "LICENSE"
+  ]
+}

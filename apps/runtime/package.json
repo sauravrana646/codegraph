@@ -1,0 +1,21 @@
+{
+  "name": "@codegraph/runtime",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "codegraph-runtime": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/index.js",
+    "serve": "node dist/index.js serve"
+  },
+  "dependencies": {
+    "@codegraph/agent-tools": "0.1.0",
+    "@codegraph/protocol": "0.1.0"
+  }
+}

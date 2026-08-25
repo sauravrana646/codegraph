@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "references": [
+    { "path": "../indexer" },
+    { "path": "../language-intelligence" },
+    { "path": "../protocol" },
+    { "path": "../security" },
+    { "path": "../sessions" },
+    { "path": "../workspace" }
+  ],
+  "include": ["src/**/*"]
+}

@@ -1,0 +1,20 @@
+{
+  "name": "@codegraph/core",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@codegraph/indexer": "0.1.0",
+    "@codegraph/language-intelligence": "0.1.0",
+    "@codegraph/protocol": "0.1.0",
+    "@codegraph/security": "0.1.0",
+    "@codegraph/sessions": "0.1.0",
+    "@codegraph/workspace": "0.1.0"
+  }
+}
